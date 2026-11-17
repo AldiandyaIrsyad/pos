@@ -3,7 +3,9 @@ services:
     image: postgres:16
     container_name: pos-db
     environment:
-      POSTGRES_PASSWORD: postgres
+      # (see .env.example). Only applied when the data volume is
+      # first created; changing it later does not change an existing DB password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5432:5432"
     volumes:

@@ -2,17 +2,27 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// .env is optional: in docker compose the variables come from the
+	// environment. Load never overrides variables that are already set.
+	// A missing file is fine; a malformed one is not.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Fatalf("load .env: %v", err)
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/pos"
+		log.Fatal("DATABASE_URL is not set (copy .env.example to .env)")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
