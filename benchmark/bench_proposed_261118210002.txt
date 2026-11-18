@@ -1,0 +1,20 @@
+file:   ./proposed.sql
+date:   2026-11-18T21:00:02+07:00
+runs:   10 (warmup 1)
+
+min:    15.1797ms
+avg:    17.23519ms
+p50:    17.3198ms
+p95:    19.7023ms
+max:    19.7023ms
+
+run 1: 18.504ms
+run 2: 16.5192ms
+run 3: 17.3984ms
+run 4: 15.4361ms
+run 5: 17.6718ms
+run 6: 17.0005ms
+run 7: 17.6201ms
+run 8: 19.7023ms
+run 9: 15.1797ms
+run 10: 17.3198ms

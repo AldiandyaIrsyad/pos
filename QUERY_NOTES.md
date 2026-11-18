@@ -1,6 +1,5 @@
 A/N: Biasanya pakai bahasa inggris untuk analisis dan lain lain. Namun, dikarenakan `SOAL.md` menggunakan bahasa Indonesia. Saya akan menggunakan Bahasa Indonesia.
 
-
 ```sql
   SELECT p.id, p.name,
     (SELECT SUM(ti.qty) FROM transaction_items ti
@@ -20,10 +19,9 @@ A/N: Biasanya pakai bahasa inggris untuk analisis dan lain lain. Namun, dikarena
   LIMIT 10;
 ```
 
-Yang pertama dilihat adalah beberapa `SELECT`. Namun, `SELECT` dalam menggunakan `WHERE ti.product_id = p.id` . Hal ini mengikat inner select dengan outer select. Yang akan membuat loop. 
+Yang pertama dilihat adalah beberapa `SELECT`. Namun, `SELECT` dalam menggunakan `WHERE ti.product_id = p.id` . Hal ini mengikat inner select dengan outer select. Yang akan membuat loop.
 
-
-Hal ini dapat diliat menggunakan query 
+Hal ini dapat diliat menggunakan query
 
 `benchmark\explain\main.go`
 
@@ -44,7 +42,51 @@ Hasilnya ada di `benchmark\explain_legacy_261118132437.txt`
             Rows Removed by Filter: 1
 ```
 
-Disini dapat dilihat terdapat nested loop. Loop pertama berjalan 5000x dan loop kedua berjalan `1048278` (seq scan, karena jumlah transaction_items ada `1048278`) dalam kata lain iterasi kurang lebih sekitar 5000*1048278 atau ~5.2 billions
+Disini dapat dilihat terdapat nested loop. Loop pertama berjalan 5000x dan loop kedua berjalan `1048278` (seq scan, karena jumlah transaction_items ada `1048278`) dalam kata lain iterasi kurang lebih sekitar 5000\*1048278 atau ~5.2 billions
 
+Menjalankan benchmark
 
+`benchmark\bench_legacy_261118205347.txt`
 
+> AVG: 2m21.68202655s
+
+```SQL
+SELECT p.id, p.name, s.qty_sold, s.revenue
+FROM (
+  SELECT ti.product_id,
+         SUM(ti.qty)      AS qty_sold,
+         SUM(ti.subtotal) AS revenue
+  FROM transactions t
+  JOIN transaction_items ti ON ti.transaction_id = t.id
+  WHERE t.outlet_id = 1
+    AND t.status = 'PAID'
+    AND t.created_at >= '2026-01-01'
+    AND t.created_at <  '2026-04-01'
+  GROUP BY ti.product_id
+  ORDER BY qty_sold DESC, ti.product_id
+  LIMIT 10
+) s
+JOIN products p ON p.id = s.product_id
+ORDER BY s.qty_sold DESC, s.product_id;
+```
+
+berikut adalah proposed query.
+
+pertama query SELECT inner (yang didalam) tidak menggunakan yang dari outer SELECT.
+Kedua kita mengubah pengecheckan `created_at` tanpa menggunakan `DATE()` dikerenakan created_at adalah sebuah index, wrapping dengan fungsi (`LOWER()`, `DATE()`, etc) membuatnya tidak behave seperti index
+
+`benchmark\bench_proposed_261118202719.txt`
+
+> avg: 53.29678ms
+
+Namun masih ada optimisasi yaitu pembuatan index..
+
+Hal ini tidak menggunakan perubahan query namun menggunakan `migrations\004_indexes2.sql` untuk pembuatan index
+
+`benchmark\bench_proposed_261118210002.txt`
+
+> avg: 17.23519ms
+
+Namun beberapa caveat:
+
+<!-- TODO: rule of thumb Filter first, join later, etc -->
