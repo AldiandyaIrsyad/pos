@@ -1,0 +1,32 @@
+Limit  (cost=88254875.67..88607894.49 rows=10 width=61) (actual time=167592.315..167945.748 rows=10 loops=1)
+  ->  Result  (cost=88254875.67..264764285.92 rows=5000 width=61) (actual time=167379.585..167732.975 rows=10 loops=1)
+        ->  Sort  (cost=88254875.67..88254888.17 rows=5000 width=29) (actual time=167311.163..167311.190 rows=10 loops=1)
+              Sort Key: ((SubPlan 1)) DESC NULLS LAST
+              Sort Method: top-N heapsort  Memory: 25kB
+              ->  Seq Scan on products p  (cost=0.00..88254767.62 rows=5000 width=29) (actual time=449.602..167295.760 rows=5000 loops=1)
+                    SubPlan 1
+                      ->  Aggregate  (cost=17650.92..17650.93 rows=1 width=8) (actual time=33.453..33.453 rows=1 loops=5000)
+                            ->  Nested Loop  (cost=0.42..17650.92 rows=1 width=4) (actual time=8.199..33.444 rows=5 loops=5000)
+                                  ->  Seq Scan on transaction_items ti  (cost=0.00..16593.30 rows=127 width=12) (actual time=0.148..32.667 rows=210 loops=5000)
+                                        Filter: (product_id = p.id)
+                                        Rows Removed by Filter: 1048068
+                                  ->  Index Scan using transactions_pkey on transactions t  (cost=0.42..8.33 rows=1 width=8) (actual time=0.003..0.003 rows=0 loops=1048278)
+                                        Index Cond: (id = ti.transaction_id)
+                                        Filter: ((outlet_id = 1) AND (status = 'PAID'::text) AND (date(created_at) >= '2026-01-01'::date) AND (date(created_at) <= '2026-03-31'::date))
+                                        Rows Removed by Filter: 1
+        SubPlan 2
+          ->  Aggregate  (cost=17650.93..17650.94 rows=1 width=32) (actual time=42.162..42.165 rows=1 loops=10)
+                ->  Nested Loop  (cost=0.42..17650.92 rows=1 width=8) (actual time=0.238..42.120 rows=111 loops=10)
+                      ->  Seq Scan on transaction_items ti_1  (cost=0.00..16593.30 rows=127 width=16) (actual time=0.009..34.300 rows=4589 loops=10)
+                            Filter: (product_id = p.id)
+                            Rows Removed by Filter: 1043689
+                      ->  Index Scan using transactions_pkey on transactions t_1  (cost=0.42..8.33 rows=1 width=8) (actual time=0.002..0.002 rows=0 loops=45894)
+                            Index Cond: (id = ti_1.transaction_id)
+                            Filter: ((outlet_id = 1) AND (status = 'PAID'::text) AND (date(created_at) >= '2026-01-01'::date) AND (date(created_at) <= '2026-03-31'::date))
+                            Rows Removed by Filter: 1
+Planning Time: 3.359 ms
+JIT:
+  Functions: 31
+  Options: Inlining true, Optimization true, Expressions true, Deforming true
+  Timing: Generation 1.456 ms, Inlining 66.212 ms, Optimization 79.816 ms, Emission 66.777 ms, Total 214.260 ms
+Execution Time: 168044.123 ms
