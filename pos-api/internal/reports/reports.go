@@ -14,7 +14,8 @@ import (
 
 // Assumed indonesian WIB
 var wib = time.FixedZone("WIB", 7*60*60)
-const sqlZone = "Asia/Jakarta" 
+
+const sqlZone = "Asia/Jakarta"
 
 type Handler struct{ db *pgxpool.Pool }
 

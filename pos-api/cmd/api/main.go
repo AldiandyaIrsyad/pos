@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AldiandyaIrsyad/pos-api/internal/catalog"
 	"github.com/AldiandyaIrsyad/pos-api/internal/reports"
 	"github.com/AldiandyaIrsyad/pos-api/internal/web"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,6 +63,7 @@ func run() error {
 
 	// ROUTES
 	reports.New(pool).Routes(mux)
+	catalog.New(pool).Routes(mux)
 
 	srv := &http.Server{
 		Addr:              addr,

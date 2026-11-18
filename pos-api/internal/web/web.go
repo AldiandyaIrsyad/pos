@@ -43,7 +43,7 @@ const maxBodyBytes = 64 << 10
 // nothing after it. The returned error message is safe to show the client.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	dec.DisallowUnknownFields() // :(
+	dec.DisallowUnknownFields() // a misspelled field is a client bug; reject it instead of ignoring it
 
 	if err := dec.Decode(v); err != nil {
 		var typeErr *json.UnmarshalTypeError
@@ -58,11 +58,10 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 		}
 	}
 
-
 	if dec.More() {
 		return errors.New("request body must contain a single JSON object")
 	}
-	
+
 	return nil
 }
 
