@@ -11,8 +11,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-      # seed
-      - ./seed.sql:/docker-entrypoint-initdb.d/01_seed.sql:ro
+      # migrations on first creation
+      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d pos"]
       interval: 5s
