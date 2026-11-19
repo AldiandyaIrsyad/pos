@@ -19,5 +19,25 @@ services:
       timeout: 5s
       retries: 60
 
+  api:
+    build: ./pos-api
+    container_name: pos-api
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/pos
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Open http://localhost:8000
+  web:
+    build: ./pos-web
+    container_name: pos-web
+    ports:
+      - "8000:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
