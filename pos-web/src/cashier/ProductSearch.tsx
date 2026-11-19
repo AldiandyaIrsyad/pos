@@ -4,9 +4,9 @@ import { searchProducts, type Product } from '../api'
 import { formatNumber, formatRupiah } from '../format'
 import AsyncView from '../ui/AsyncView'
 
-type Props = { outletId: number; onAdd: (product: Product) => void }
+type Props = { outletId: number; onAdd: (product: Product) => void; disabled?: boolean }
 
-export default function ProductSearch({ outletId, onAdd }: Props) {
+export default function ProductSearch({ outletId, onAdd, disabled = false }: Props) {
   const [text, setText] = useState('')
   const q = useDebounced(text.trim(), 250)
 
@@ -51,7 +51,7 @@ export default function ProductSearch({ outletId, onAdd }: Props) {
                   <button
                     className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:bg-slate-300"
                     onClick={() => onAdd(p)}
-                    disabled={p.stock === 0}
+                    disabled={disabled || p.stock === 0}
                   >
                     {p.stock === 0 ? 'Out' : 'Add'}
                   </button>

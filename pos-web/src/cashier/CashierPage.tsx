@@ -26,11 +26,15 @@ export default function CashierPage() {
     // The cart being sent must not change until the server answers.
     if (sending) return
     dispatch(action)
+    // Editing or clearing the cart ends any prior ambiguous attempt so a new
+    // customer with an identical cart can never replay an older key.
+    checkout.clearAttempt()
     // A new cart after a sale: the old receipt no longer applies.
     if (checkout.state.status === 'success') checkout.reset()
   }
 
   function changeOutlet(id: number) {
+    if (sending) return
     // Prices are shared but stock is per outlet, so the cart doesn't carry over.
     setOutletId(id)
     dispatch({ type: 'clear' })
@@ -47,18 +51,26 @@ export default function CashierPage() {
     <div className="grid gap-6 lg:grid-cols-[1fr_420px]">
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap gap-4">
-          <OutletSelect value={outletId} onChange={changeOutlet} />
+          <OutletSelect value={outletId} onChange={changeOutlet} disabled={sending} />
           <label className="flex flex-col gap-1 text-sm">
             <span className="font-medium text-slate-600">Cashier</span>
             <input
-              className="rounded border border-slate-300 bg-white px-2 py-1.5"
+              className="rounded border border-slate-300 bg-white px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               placeholder="Name"
               value={cashierName}
-              onChange={(e) => setCashierName(e.target.value)}
+              disabled={sending}
+              onChange={(e) => {
+                setCashierName(e.target.value)
+                checkout.clearAttempt()
+              }}
             />
           </label>
         </div>
-        <ProductSearch outletId={outletId} onAdd={(product: Product) => updateCart({ type: 'add', product })} />
+        <ProductSearch
+          outletId={outletId}
+          disabled={sending}
+          onAdd={(product: Product) => updateCart({ type: 'add', product })}
+        />
       </div>
 
       <section className="flex h-fit flex-col gap-4 rounded-lg bg-white p-4 shadow-sm">
@@ -67,6 +79,7 @@ export default function CashierPage() {
           cart={cart}
           shortItems={shortItems}
           dispatch={updateCart}
+          disabled={sending}
         />
         <CheckoutStatus state={checkout.state} shortCount={shortItems.length} />
         <button
@@ -89,7 +102,8 @@ function CheckoutStatus({ state, shortCount }: { state: CheckoutState; shortCoun
     case 'success':
       return (
         <p className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-          Transaction #{state.transaction.id} paid · {formatRupiah(state.transaction.total)}
+          Transaction #{state.transaction.id} {state.transaction.status.toLowerCase()} ·{' '}
+          {formatRupiah(state.transaction.total)}
         </p>
       )
     case 'short-stock':
