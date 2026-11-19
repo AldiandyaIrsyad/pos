@@ -14,9 +14,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -440,6 +442,23 @@ func TestCheckoutReturns503WhenStockRowStaysLocked(t *testing.T) {
 	}
 }
 
+func TestCheckoutMergesDuplicateProducts(t *testing.T) {
+	f := newFixture(t, 10)
+	p := f.products[0]
+
+	code, body := f.checkout(uuid4(), lineItem{ProductID: p, Qty: 2}, lineItem{ProductID: p, Qty: 3})
+	if code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %v, want 201", code, body)
+	}
+	items := body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["qty"].(float64) != 5 {
+		t.Fatalf("items = %v, want single merged line of qty 5", items)
+	}
+	if f.stock(p) != 5 {
+		t.Fatalf("stock = %d, want 5", f.stock(p))
+	}
+}
+
 func TestCheckoutValidation(t *testing.T) {
 	f := newFixture(t, 10)
 	p := f.products[0]
@@ -454,6 +473,11 @@ func TestCheckoutValidation(t *testing.T) {
 		{"no items", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi"}, 400},
 		{"zero qty", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi", Items: []lineItem{{p, 0}}}, 400},
 		{"blank cashier", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "  ", Items: []lineItem{{p, 1}}}, 400},
+		{"cashier with NUL", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi\x00", Items: []lineItem{{p, 1}}}, 400},
+		{"cashier too long", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: strings.Repeat("é", maxCashierName+1), Items: []lineItem{{p, 1}}}, 400},
+		{"outlet_id overflow", uuid4(), checkoutRequest{OutletID: math.MaxInt32 + 1, CashierName: "Budi", Items: []lineItem{{p, 1}}}, 400},
+		{"product_id overflow", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi", Items: []lineItem{{math.MaxInt32 + 1, 1}}}, 400},
+		{"merged qty exceeds max", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi", Items: []lineItem{{p, maxQtyPerItem}, {p, 1}}}, 400},
 		{"wrong type", uuid4(), map[string]any{"outlet_id": "one"}, 400},
 		{"unknown outlet", uuid4(), checkoutRequest{OutletID: 999999, CashierName: "Budi", Items: []lineItem{{p, 1}}}, 404},
 		{"unknown product", uuid4(), checkoutRequest{OutletID: f.outletID, CashierName: "Budi", Items: []lineItem{{999999, 1}}}, 404},
@@ -471,5 +495,15 @@ func TestCheckoutValidation(t *testing.T) {
 	}
 	if f.stock(p) != 10 {
 		t.Fatal("an invalid request changed stock")
+	}
+
+	// Multibyte cashier name at the rune limit (100 runes > 100 bytes) is accepted.
+	code, body := f.do("POST", "/checkout", uuid4(), checkoutRequest{
+		OutletID:    f.outletID,
+		CashierName: "  " + strings.Repeat("é", maxCashierName) + "  ",
+		Items:       []lineItem{{p, 1}},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("100-rune cashier name: status = %d, body = %v, want 201", code, body)
 	}
 }

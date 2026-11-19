@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -69,7 +70,12 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 		}
 	}
 
-	if dec.More() {
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return errors.New("request body too large")
+		}
 		return errors.New("request body must contain a single JSON object")
 	}
 

@@ -165,9 +165,13 @@ func TestSearchValidation(t *testing.T) {
 	for _, path := range []string{
 		"/products",
 		"/products?outlet_id=abc",
+		"/products?outlet_id=2147483648",
 		fmt.Sprintf("/products?outlet_id=%d&limit=0", f.outletID),
 		fmt.Sprintf("/products?outlet_id=%d&limit=101", f.outletID),
 		fmt.Sprintf("/products?outlet_id=%d&cursor=-1", f.outletID),
+		fmt.Sprintf("/products?outlet_id=%d&cursor=2147483648", f.outletID),
+		fmt.Sprintf("/products?outlet_id=%d&q=kopi%%00", f.outletID),
+		fmt.Sprintf("/products?outlet_id=%d&category=snack%%00", f.outletID),
 	} {
 		if code, _ := f.get(path); code != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400", path, code)

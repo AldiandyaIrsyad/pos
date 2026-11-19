@@ -66,11 +66,12 @@ const (
 func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 
-	outletID, err := strconv.Atoi(qs.Get("outlet_id"))
-	if err != nil || outletID <= 0 {
+	outletID64, err := strconv.ParseInt(qs.Get("outlet_id"), 10, 32)
+	if err != nil || outletID64 <= 0 {
 		web.WriteError(w, http.StatusBadRequest, "outlet_id is required and must be a positive integer")
 		return
 	}
+	outletID := int(outletID64)
 	limit := defaultLimit
 	if s := qs.Get("limit"); s != "" {
 		limit, err = strconv.Atoi(s)
@@ -81,11 +82,12 @@ func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
 	}
 	afterID := 0
 	if s := qs.Get("cursor"); s != "" {
-		afterID, err = strconv.Atoi(s)
-		if err != nil || afterID < 0 {
+		cursor64, err := strconv.ParseInt(s, 10, 32)
+		if err != nil || cursor64 < 0 {
 			web.WriteError(w, http.StatusBadRequest, "cursor is invalid")
 			return
 		}
+		afterID = int(cursor64)
 	}
 	q := strings.TrimSpace(qs.Get("q"))
 	if utf8.RuneCountInString(q) > maxQueryLen {
@@ -93,9 +95,9 @@ func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	category := strings.TrimSpace(qs.Get("category"))
-	// Postgres rejects invalid UTF-8 with an error, which would surface as a 500.
-	if !utf8.ValidString(q) || !utf8.ValidString(category) {
-		web.WriteError(w, http.StatusBadRequest, "q and category must be valid UTF-8")
+	// Postgres rejects invalid UTF-8 and NUL bytes in TEXT, which would surface as a 500.
+	if !utf8.ValidString(q) || !utf8.ValidString(category) || strings.ContainsRune(q, 0) || strings.ContainsRune(category, 0) {
+		web.WriteError(w, http.StatusBadRequest, "q and category must be valid UTF-8 without NUL bytes")
 		return
 	}
 

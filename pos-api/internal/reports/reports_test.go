@@ -168,6 +168,7 @@ func TestReportValidation(t *testing.T) {
 	base := fmt.Sprintf("outlet_id=%d", f.outletID)
 	for _, path := range []string{
 		"/reports/daily-sales?from=2026-01-01&to=2026-01-31",
+		"/reports/daily-sales?outlet_id=2147483648&from=2026-01-01&to=2026-01-31",
 		"/reports/daily-sales?" + base + "&from=2026-13-01&to=2026-01-31",
 		"/reports/daily-sales?" + base + "&from=2026-02-01&to=2026-01-31",
 		"/reports/top-products?" + base + "&from=2026-01-01&to=2026-01-31&sort=price",

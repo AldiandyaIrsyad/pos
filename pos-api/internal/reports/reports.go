@@ -38,11 +38,12 @@ type filter struct {
 // parseFilter writes a 400 and returns false when the parameters are invalid.
 func parseFilter(w http.ResponseWriter, r *http.Request) (filter, bool) {
 	qs := r.URL.Query()
-	outletID, err := strconv.Atoi(qs.Get("outlet_id"))
-	if err != nil || outletID <= 0 {
+	outletID64, err := strconv.ParseInt(qs.Get("outlet_id"), 10, 32)
+	if err != nil || outletID64 <= 0 {
 		web.WriteError(w, http.StatusBadRequest, "outlet_id is required and must be a positive integer")
 		return filter{}, false
 	}
+	outletID := int(outletID64)
 	from, err := time.ParseInLocation(time.DateOnly, qs.Get("from"), wib)
 	if err != nil {
 		web.WriteError(w, http.StatusBadRequest, "from is required, format YYYY-MM-DD")

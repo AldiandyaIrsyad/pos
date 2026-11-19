@@ -9,11 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -72,12 +74,15 @@ const (
 
 // validate returns a message for the first invalid field, or "".
 func (req *checkoutRequest) validate() string {
+	cashier := strings.TrimSpace(req.CashierName)
 	switch {
-	case req.OutletID <= 0:
+	case req.OutletID <= 0 || req.OutletID > math.MaxInt32:
 		return "outlet_id is required and must be a positive integer"
-	case strings.TrimSpace(req.CashierName) == "":
+	case cashier == "":
 		return "cashier_name is required"
-	case len(req.CashierName) > maxCashierName:
+	case strings.ContainsRune(cashier, 0):
+		return "cashier_name contains an invalid character"
+	case utf8.RuneCountInString(cashier) > maxCashierName:
 		return fmt.Sprintf("cashier_name must be at most %d characters", maxCashierName)
 	case len(req.Items) == 0:
 		return "items must contain at least one item"
@@ -85,7 +90,7 @@ func (req *checkoutRequest) validate() string {
 		return fmt.Sprintf("items must contain at most %d items", maxItems)
 	}
 	for i, it := range req.Items {
-		if it.ProductID <= 0 {
+		if it.ProductID <= 0 || it.ProductID > math.MaxInt32 {
 			return fmt.Sprintf("items[%d].product_id must be a positive integer", i)
 		}
 		if it.Qty <= 0 || it.Qty > maxQtyPerItem {
@@ -148,6 +153,12 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	cashier := strings.TrimSpace(req.CashierName)
 	items := normalize(req.Items)
+	for _, it := range items {
+		if it.Qty > maxQtyPerItem {
+			web.WriteError(w, http.StatusBadRequest, fmt.Sprintf("total qty for product %d must be at most %d", it.ProductID, maxQtyPerItem))
+			return
+		}
+	}
 	hash := requestHash(req.OutletID, cashier, items)
 
 	ctx := r.Context()
