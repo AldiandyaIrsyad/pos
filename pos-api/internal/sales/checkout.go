@@ -5,9 +5,9 @@ package sales
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -156,7 +156,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		web.ServerError(w, r, err)
 		return
 	}
-	defer tx.Rollback(ctx) // no-op after Commit
+	defer rollback(ctx, tx) // no-op after Commit
 
 	// 1. Claim the key first. A concurrent request with the same key blocks here
 	//    on the primary key until this transaction ends: after our commit it gets
@@ -169,7 +169,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		tx.Rollback(ctx)
+		rollback(ctx, tx)
 		h.replay(w, r, key, hash)
 		return
 	}
@@ -212,11 +212,44 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Record the sale. This needs no stock row, so it runs before step 4:
-	//    the stock row locks taken there are held until commit, and nothing but
-	//    the commit is left after them. A shortage rolls these inserts back.
+	// 3. Lock every requested stock row in product_id order in one statement,
+	//    then check shortages against the locked quantities. A 409 rolls back
+	//    before touching transactions/transaction_items and always reports the
+	//    exact committed availability.
+	available := make(map[int]int, len(items))
+	rows, _ = tx.Query(ctx,
+		`SELECT product_id, qty FROM stocks
+		 WHERE outlet_id = $1 AND product_id = ANY($2)
+		 ORDER BY product_id
+		 FOR UPDATE`,
+		req.OutletID, ids)
+	var stockProductID, stockQty int
+	_, err = pgx.ForEachRow(rows, []any{&stockProductID, &stockQty}, func() error {
+		available[stockProductID] = stockQty
+		return nil
+	})
+	if err != nil {
+		web.ServerError(w, r, err)
+		return
+	}
+
+	var short []shortItem
+	for _, it := range items {
+		if avail := available[it.ProductID]; avail < it.Qty {
+			short = append(short, shortItem{ProductID: it.ProductID, Requested: it.Qty, Available: avail})
+		}
+	}
+	if len(short) > 0 {
+		web.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":       "insufficient stock",
+			"short_items": short,
+		})
+		return
+	}
+
+	// 4. Decrement stock and record the sale in one round trip while holding
+	//    the stock locks, then commit.
 	t := transaction{OutletID: req.OutletID, CashierName: cashier, Status: "PAID", Items: make([]itemLine, len(items))}
-	productIDs := make([]int32, len(items))
 	qtys := make([]int32, len(items))
 	unitPrices := make([]int64, len(items))
 	subtotals := make([]int64, len(items))
@@ -225,65 +258,44 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		sub := p * int64(it.Qty)
 		t.Items[i] = itemLine{ProductID: it.ProductID, Qty: it.Qty, Price: p, Subtotal: sub}
 		t.Total += sub
-		productIDs[i], qtys[i], unitPrices[i], subtotals[i] = int32(it.ProductID), int32(it.Qty), p, sub
+		qtys[i], unitPrices[i], subtotals[i] = int32(it.Qty), p, sub
 	}
 
-	err = tx.QueryRow(ctx,
-		`INSERT INTO transactions (outlet_id, cashier_name, status, total)
-		 VALUES ($1, $2, 'PAID', $3) RETURNING id, created_at`,
-		t.OutletID, t.CashierName, t.Total).Scan(&t.ID, &t.CreatedAt)
+	var updated int
+	err = tx.QueryRow(ctx, `
+		WITH dec AS (
+			UPDATE stocks s
+			SET qty = s.qty - u.qty
+			FROM unnest($2::int[], $3::int[]) AS u(product_id, qty)
+			WHERE s.outlet_id = $1 AND s.product_id = u.product_id AND s.qty >= u.qty
+			RETURNING s.product_id
+		),
+		tx AS (
+			INSERT INTO transactions (outlet_id, cashier_name, status, total)
+			VALUES ($1, $4, 'PAID', $5)
+			RETURNING id, created_at
+		),
+		ins_items AS (
+			INSERT INTO transaction_items (transaction_id, product_id, qty, price, subtotal)
+			SELECT tx.id, u.product_id, u.qty, u.price, u.subtotal
+			FROM tx
+			CROSS JOIN unnest($2::int[], $3::int[], $6::bigint[], $7::bigint[]) AS u(product_id, qty, price, subtotal)
+		),
+		link_key AS (
+			UPDATE idempotency_keys
+			SET transaction_id = (SELECT id FROM tx)
+			WHERE key = $8
+		)
+		SELECT tx.id, tx.created_at, (SELECT count(*) FROM dec)
+		FROM tx`,
+		t.OutletID, ids, qtys, t.CashierName, t.Total, unitPrices, subtotals, key,
+	).Scan(&t.ID, &t.CreatedAt, &updated)
 	if err != nil {
 		web.ServerError(w, r, err)
 		return
 	}
-	_, err = tx.Exec(ctx,
-		`INSERT INTO transaction_items (transaction_id, product_id, qty, price, subtotal)
-		 SELECT $1, * FROM unnest($2::int[], $3::int[], $4::bigint[], $5::bigint[])`,
-		t.ID, productIDs, qtys, unitPrices, subtotals)
-	if err != nil {
-		web.ServerError(w, r, err)
-		return
-	}
-	if _, err := tx.Exec(ctx, `UPDATE idempotency_keys SET transaction_id = $1 WHERE key = $2`, t.ID, key); err != nil {
-		web.ServerError(w, r, err)
-		return
-	}
-
-	// 4. Take the stock, item by item in product_id order. The UPDATE locks the
-	//    row; if another checkout holds it, this one waits, then re-checks
-	//    "qty >= n" against the committed new qty (READ COMMITTED re-evaluates the
-	//    WHERE on the latest row version). So stock can't go below zero, no matter
-	//    how many checkouts race. Keep going after a shortage to report all of them.
-	var short []shortItem
-	for _, it := range items {
-		tag, err := tx.Exec(ctx,
-			`UPDATE stocks SET qty = qty - $3
-			 WHERE outlet_id = $1 AND product_id = $2 AND qty >= $3`,
-			req.OutletID, it.ProductID, it.Qty)
-		if err != nil {
-			web.ServerError(w, r, err)
-			return
-		}
-		if tag.RowsAffected() == 1 {
-			continue
-		}
-		var available int
-		err = tx.QueryRow(ctx, `SELECT qty FROM stocks WHERE outlet_id = $1 AND product_id = $2`,
-			req.OutletID, it.ProductID).Scan(&available)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no stock row: available stays 0
-			web.ServerError(w, r, err)
-			return
-		}
-		short = append(short, shortItem{ProductID: it.ProductID, Requested: it.Qty, Available: available})
-	}
-	if len(short) > 0 {
-		// Rolled back by the defer: the sale rows and the key are gone, so a retry
-		// is judged against current stock. The transaction id stays used (sequences
-		// don't roll back), which leaves a gap in ids; ids are not receipt numbers.
-		web.WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":       "insufficient stock",
-			"short_items": short,
-		})
+	if updated != len(items) {
+		web.ServerError(w, r, fmt.Errorf("stock update mismatch: updated %d of %d items", updated, len(items)))
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -291,6 +303,14 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.WriteJSON(w, http.StatusCreated, t)
+}
+
+// rollback ends an uncommitted transaction even if the request context was
+// canceled, so pgx returns the connection to the pool instead of closing it.
+func rollback(ctx context.Context, tx pgx.Tx) {
+	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	_ = tx.Rollback(rbCtx)
 }
 
 // replay answers a request whose key was already committed: the same body gets

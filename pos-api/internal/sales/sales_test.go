@@ -220,6 +220,87 @@ func TestCheckoutIsAllOrNothing(t *testing.T) {
 	}
 }
 
+// Concurrent carts requesting the same products in opposite orders must lock in
+// product_id order and never deadlock.
+func TestConcurrentMultiItemOppositeOrderNeverDeadlocks(t *testing.T) {
+	f := newFixture(t, 20, 20)
+	a, b := f.products[0], f.products[1]
+
+	const requests = 30
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	codes := make([]int, requests)
+	for i := range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				codes[i], _ = f.checkout(uuid4(), lineItem{ProductID: a, Qty: 1}, lineItem{ProductID: b, Qty: 1})
+			} else {
+				codes[i], _ = f.checkout(uuid4(), lineItem{ProductID: b, Qty: 1}, lineItem{ProductID: a, Qty: 1})
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	count := map[int]int{}
+	for _, c := range codes {
+		count[c]++
+	}
+	if count[http.StatusCreated] != 20 || count[http.StatusConflict] != 10 {
+		t.Fatalf("want 20 x 201 and 10 x 409, got %v", count)
+	}
+	if f.stock(a) != 0 || f.stock(b) != 0 || f.transactionCount() != 20 {
+		t.Fatalf("stock=(%d,%d) transactions=%d, want (0,0) and 20", f.stock(a), f.stock(b), f.transactionCount())
+	}
+}
+
+// Every short product (including one without a stock row) is reported together,
+// and retrying the same Idempotency-Key succeeds once stock is available.
+func TestCheckoutReportsAllShortItemsAndAllowsRetry(t *testing.T) {
+	f := newFixture(t, 1, 2)
+	p1, p2 := f.products[0], f.products[1]
+	// Delete p2's stock row to verify missing stock rows report available=0.
+	if _, err := testPool.Exec(context.Background(),
+		`DELETE FROM stocks WHERE outlet_id = $1 AND product_id = $2`, f.outletID, p2); err != nil {
+		t.Fatal(err)
+	}
+
+	key := uuid4()
+	items := []lineItem{{ProductID: p1, Qty: 3}, {ProductID: p2, Qty: 1}}
+	code, body := f.checkout(key, items...)
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", code)
+	}
+	short := body["short_items"].([]any)
+	if len(short) != 2 {
+		t.Fatalf("short_items = %v, want 2 items", short)
+	}
+	first, second := short[0].(map[string]any), short[1].(map[string]any)
+	if int(first["product_id"].(float64)) != p1 || first["available"].(float64) != 1 ||
+		int(second["product_id"].(float64)) != p2 || second["available"].(float64) != 0 {
+		t.Fatalf("short_items = %v", short)
+	}
+
+	// Replenish stock and retry with the exact same Idempotency-Key.
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE stocks SET qty = 5 WHERE outlet_id = $1 AND product_id = $2`, f.outletID, p1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO stocks (outlet_id, product_id, qty) VALUES ($1, $2, 5)`, f.outletID, p2); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := f.checkout(key, items...); code != http.StatusCreated {
+		t.Fatalf("retry after 409: status = %d, body = %v, want 201", code, body)
+	}
+	if f.stock(p1) != 2 || f.stock(p2) != 4 || f.transactionCount() != 1 {
+		t.Fatalf("after retry: stock=(%d,%d) tx=%d", f.stock(p1), f.stock(p2), f.transactionCount())
+	}
+}
+
 func TestCheckoutTakesPriceFromDatabase(t *testing.T) {
 	f := newFixture(t, 10)
 	// "price" is not part of the request: an unknown field is rejected outright.
