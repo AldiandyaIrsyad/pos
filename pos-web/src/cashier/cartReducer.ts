@@ -1,5 +1,5 @@
 // The cart's rules as a pure reducer: no React, no fetch.
-import type { Product } from '../api'
+import type { Product } from '../api.ts'
 
 export const MAX_QTY_PER_ITEM = 10_000
 

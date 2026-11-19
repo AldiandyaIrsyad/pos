@@ -1,4 +1,4 @@
-import type { ReportFilter } from '../api'
+import type { ReportFilter } from '../api.ts'
 
 // The seed covers 2025-07-01 to 2026-06-30, so a range relative to today can
 // be empty. Default to a fixed quarter inside the seed.

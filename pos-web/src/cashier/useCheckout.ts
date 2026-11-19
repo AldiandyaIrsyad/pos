@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import { ApiError, checkout, type CheckoutRequest, type ShortItem, type Transaction } from '../api'
-import type { CartLine } from './cartReducer'
+import { ApiError, checkout, type CheckoutRequest, type ShortItem, type Transaction } from '../api.ts'
+import type { CartLine } from './cartReducer.ts'
 
 export type CheckoutState =
   | { status: 'idle' }
