@@ -1,0 +1,31 @@
+Checkout write cost of the indexes in migrations/004_indexes2.sql
+date:     2026-11-20T03:42:04+07:00
+setup:    8 workers, 5000 checkouts per phase (warmup 200), 3 items each, seed 1
+rounds:   5, alternating before/after, each phase on a fresh copy of pos
+before:   indexes below dropped
+after:    migration applied
+indexes:  transactions_paid_outlet_created_idx, transaction_items_transaction_idx
+
+median of 5 rounds
+                before        after    change
+tps              814.1        807.1     -0.9%
+avg             9.82ms       9.90ms     +0.8%
+p50            10.30ms      10.41ms     +1.1%
+p95            12.74ms      12.96ms     +1.7%
+p99            16.14ms      17.49ms     +8.4%
+max            32.59ms      42.58ms    +30.7%
+
+per round
+                  tps       p50       p95       p99  rejected
+1 before        803.9   10.30ms   13.82ms   17.62ms         2
+1 after         793.6   10.53ms   12.87ms   17.61ms         2
+2 before        822.6   10.25ms   12.74ms   15.84ms         2
+2 after         830.0    9.90ms   13.03ms   15.10ms         2
+3 before        785.0   10.70ms   12.17ms   14.15ms         2
+3 after         825.5   10.35ms   12.90ms   17.49ms         2
+4 before        831.6   10.26ms   12.37ms   16.75ms         2
+4 after         807.1   10.41ms   12.96ms   15.79ms         2
+5 before        814.1   10.39ms   12.82ms   16.14ms         2
+5 after         800.4   10.41ms   13.54ms   18.61ms         2
+
+rejected = checkouts refused for low stock; rolled back, still timed

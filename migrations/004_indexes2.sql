@@ -4,12 +4,11 @@
 \c pos
 
 CREATE INDEX IF NOT EXISTS transactions_paid_outlet_created_idx
-  ON transactions (outlet_id, created_at) INCLUDE (id, total)
+  ON transactions (outlet_id, created_at) INCLUDE (total)
   WHERE status = 'PAID';
 
 CREATE INDEX IF NOT EXISTS transaction_items_transaction_idx
   ON transaction_items (transaction_id) INCLUDE (product_id, qty, subtotal);
-
 
 VACUUM ANALYZE transactions;
 VACUUM ANALYZE transaction_items;

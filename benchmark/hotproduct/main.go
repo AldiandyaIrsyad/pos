@@ -11,12 +11,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -164,13 +163,15 @@ func fire(s settings, f fixture) ([]time.Duration, map[int]int, time.Duration, e
 					return
 				}
 				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("Idempotency-Key", uuid4())
+				req.Header.Set("Idempotency-Key", benchdb.UUID4())
 				t := time.Now()
 				resp, err := client.Do(req)
 				if err != nil {
 					errs[c] = err
 					return
 				}
+				// Drain the body so net/http reuses the TCP connection via keep-alive.
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				durations[i], statuses[i] = time.Since(t), resp.StatusCode
 			}
@@ -212,8 +213,8 @@ func formatReport(s settings, durations []time.Duration, codes map[int]int, wall
 
 	fmt.Fprintf(&b, "\nthroughput  %.1f requests/s (wall %s)\n", float64(s.requests)/wall.Seconds(), wall.Round(time.Millisecond))
 	fmt.Fprintf(&b, "latency     min %s  avg %s  p50 %s  p95 %s  p99 %s  max %s\n",
-		ms(durations[0]), ms(total/time.Duration(len(durations))), ms(percentile(durations, 0.50)),
-		ms(percentile(durations, 0.95)), ms(percentile(durations, 0.99)), ms(durations[len(durations)-1]))
+		benchdb.Ms(durations[0]), benchdb.Ms(total/time.Duration(len(durations))), benchdb.Ms(benchdb.Percentile(durations, 0.50)),
+		benchdb.Ms(benchdb.Percentile(durations, 0.95)), benchdb.Ms(benchdb.Percentile(durations, 0.99)), benchdb.Ms(durations[len(durations)-1]))
 
 	fmt.Fprintf(&b, "\nchecks\n")
 	check := func(ok bool, msg string, args ...any) {
@@ -229,20 +230,4 @@ func formatReport(s settings, durations []time.Duration, codes map[int]int, wall
 	check(created+codes[http.StatusConflict]+codes[http.StatusServiceUnavailable] == s.requests, "every request answered 201, 409 or 503")
 	check(codes[http.StatusConflict] == 0 || finalStock == 0, "409 only once stock ran out (final stock %d)", finalStock)
 	return b.String()
-}
-
-func uuid4() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-}
-
-func ms(d time.Duration) string { return fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond)) }
-
-// percentile uses the nearest-rank method on an ascending slice.
-func percentile(sorted []time.Duration, p float64) time.Duration {
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	return sorted[max(idx, 0)]
 }

@@ -17,7 +17,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -61,7 +60,7 @@ func main() {
 	n := flag.Int("n", 5000, "measured checkouts per phase")
 	warmup := flag.Int("warmup", 200, "unmeasured checkouts before measuring")
 	items := flag.Int("items", 3, "distinct products per checkout")
-	rounds := flag.Int("rounds", 3, "before/after pairs to run")
+	rounds := flag.Int("rounds", 5, "before/after pairs to run")
 	seed := flag.Uint64("seed", 1, "random seed for the carts; every phase gets the same carts")
 	dsn := flag.String("dsn", "postgres://postgres:postgres@localhost:5432/postgres?connect_timeout=10", "admin dsn; must not point at pos, which is copied")
 	flag.Parse()
@@ -179,9 +178,9 @@ func phase(ctx context.Context, admin *pgx.Conn, cfg *pgx.ConnConfig, m benchdb.
 	return result{
 		tps:      float64(s.n) / wall.Seconds(),
 		avg:      total / time.Duration(s.n),
-		p50:      percentile(durations, 0.50),
-		p95:      percentile(durations, 0.95),
-		p99:      percentile(durations, 0.99),
+		p50:      benchdb.Percentile(durations, 0.50),
+		p95:      benchdb.Percentile(durations, 0.95),
+		p99:      benchdb.Percentile(durations, 0.99),
 		max:      durations[len(durations)-1],
 		rejected: rejected,
 	}, nil
@@ -212,7 +211,7 @@ func formatReport(migration string, indexes []string, s settings, before, after 
 		{"max", func(r result) time.Duration { return r.max }},
 	} {
 		bv, av := median(before, m.get), median(after, m.get)
-		fmt.Fprintf(&b, "%-9s %12s %12s %+8.1f%%\n", m.name, ms(bv), ms(av), change(float64(bv), float64(av)))
+		fmt.Fprintf(&b, "%-9s %12s %12s %+8.1f%%\n", m.name, benchdb.Ms(bv), benchdb.Ms(av), change(float64(bv), float64(av)))
 	}
 
 	fmt.Fprintf(&b, "\nper round\n")
@@ -222,7 +221,7 @@ func formatReport(migration string, indexes []string, s settings, before, after 
 			name string
 			r    result
 		}{{"before", before[i]}, {"after", after[i]}} {
-			fmt.Fprintf(&b, "%d %-9s %9.1f %9s %9s %9s %9d\n", i+1, x.name, x.r.tps, ms(x.r.p50), ms(x.r.p95), ms(x.r.p99), x.r.rejected)
+			fmt.Fprintf(&b, "%d %-9s %9.1f %9s %9s %9s %9d\n", i+1, x.name, x.r.tps, benchdb.Ms(x.r.p50), benchdb.Ms(x.r.p95), benchdb.Ms(x.r.p99), x.r.rejected)
 		}
 	}
 	fmt.Fprintf(&b, "\nrejected = checkouts refused for low stock; rolled back, still timed\n")
@@ -239,8 +238,6 @@ func median[T cmp.Ordered](rs []result, get func(result) T) T {
 }
 
 func change(before, after float64) float64 { return (after - before) / before * 100 }
-
-func ms(d time.Duration) string { return fmt.Sprintf("%.2fms", float64(d)/float64(time.Millisecond)) }
 
 func makeCarts(rng *rand.Rand, count, items int, maxOutlet, maxProduct int32) []cart {
 	carts := make([]cart, count)
@@ -297,9 +294,9 @@ func runPhase(ctx context.Context, conns []*pgx.Conn, carts []cart) ([]time.Dura
 	return durations, rejected.Load(), wall, nil
 }
 
-// checkout runs the statements of one checkout in a single transaction.
-// It returns false when a product has too little stock; the transaction is
-// then rolled back with nothing written.
+// checkout mirrors pos-api/internal/sales/checkout.go: claim the idempotency
+// key, look up outlet and product prices, lock stock rows in product_id order,
+// then decrement stock and insert sale rows in one writable CTE.
 func checkout(ctx context.Context, conn *pgx.Conn, c cart) (bool, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -307,16 +304,16 @@ func checkout(ctx context.Context, conn *pgx.Conn, c cart) (bool, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	for _, it := range c.items {
-		tag, err := tx.Exec(ctx,
-			`UPDATE stocks SET qty = qty - $3 WHERE outlet_id = $1 AND product_id = $2 AND qty >= $3`,
-			c.outletID, it.productID, it.qty)
-		if err != nil {
-			return false, err
-		}
-		if tag.RowsAffected() == 0 {
-			return false, nil
-		}
+	key := benchdb.UUID4()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO idempotency_keys (key, request_hash) VALUES ($1, 'bench')
+		 ON CONFLICT (key) DO NOTHING`, key); err != nil {
+		return false, err
+	}
+
+	var outletExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM outlets WHERE id = $1)`, c.outletID).Scan(&outletExists); err != nil {
+		return false, err
 	}
 
 	productIDs := make([]int32, len(c.items))
@@ -326,40 +323,79 @@ func checkout(ctx context.Context, conn *pgx.Conn, c cart) (bool, error) {
 		qtys[i] = it.qty
 	}
 
-	// Prices come from the products table, as in the real checkout. The items
-	// insert joins products again, so no price is passed in from Go.
+	prices := make(map[int32]int64, len(c.items))
+	rows, _ := tx.Query(ctx, `SELECT id, price FROM products WHERE id = ANY($1)`, productIDs)
+	var id int32
+	var price int64
+	if _, err := pgx.ForEachRow(rows, []any{&id, &price}, func() error {
+		prices[id] = price
+		return nil
+	}); err != nil {
+		return false, err
+	}
+
+	available := make(map[int32]int32, len(c.items))
+	rows, _ = tx.Query(ctx,
+		`SELECT product_id, qty FROM stocks
+		 WHERE outlet_id = $1 AND product_id = ANY($2)
+		 ORDER BY product_id
+		 FOR UPDATE`,
+		c.outletID, productIDs)
+	var stockPID, stockQty int32
+	if _, err := pgx.ForEachRow(rows, []any{&stockPID, &stockQty}, func() error {
+		available[stockPID] = stockQty
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	for _, it := range c.items {
+		if available[it.productID] < it.qty {
+			return false, nil
+		}
+	}
+
+	unitPrices := make([]int64, len(c.items))
+	subtotals := make([]int64, len(c.items))
+	var total int64
+	for i, it := range c.items {
+		p := prices[it.productID]
+		sub := p * int64(it.qty)
+		unitPrices[i], subtotals[i] = p, sub
+		total += sub
+	}
+
 	var txID int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO transactions (outlet_id, cashier_name, status, total)
-		SELECT $1, 'bench', 'PAID', sum(p.price * q.qty)
-		FROM unnest($2::int[], $3::int[]) AS q(product_id, qty)
-		JOIN products p ON p.id = q.product_id
-		RETURNING id`,
-		c.outletID, productIDs, qtys).Scan(&txID)
-	if err != nil {
-		return false, err
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO transaction_items (transaction_id, product_id, qty, price, subtotal)
-		SELECT $1, p.id, q.qty, p.price, p.price * q.qty
-		FROM unnest($2::int[], $3::int[]) AS q(product_id, qty)
-		JOIN products p ON p.id = q.product_id`,
-		txID, productIDs, qtys); err != nil {
-		return false, err
-	}
-
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES (gen_random_uuid(), 'bench', $1)`,
-		txID); err != nil {
+	var updated int
+	if err := tx.QueryRow(ctx, `
+		WITH dec AS (
+			UPDATE stocks s
+			SET qty = s.qty - u.qty
+			FROM unnest($2::int[], $3::int[]) AS u(product_id, qty)
+			WHERE s.outlet_id = $1 AND s.product_id = u.product_id AND s.qty >= u.qty
+			RETURNING s.product_id
+		),
+		tx AS (
+			INSERT INTO transactions (outlet_id, cashier_name, status, total)
+			VALUES ($1, 'bench', 'PAID', $4)
+			RETURNING id
+		),
+		ins_items AS (
+			INSERT INTO transaction_items (transaction_id, product_id, qty, price, subtotal)
+			SELECT tx.id, u.product_id, u.qty, u.price, u.subtotal
+			FROM tx
+			CROSS JOIN unnest($2::int[], $3::int[], $5::bigint[], $6::bigint[]) AS u(product_id, qty, price, subtotal)
+		),
+		link_key AS (
+			UPDATE idempotency_keys
+			SET transaction_id = (SELECT id FROM tx)
+			WHERE key = $7
+		)
+		SELECT tx.id, (SELECT count(*) FROM dec)
+		FROM tx`,
+		c.outletID, productIDs, qtys, total, unitPrices, subtotals, key,
+	).Scan(&txID, &updated); err != nil {
 		return false, err
 	}
 
 	return true, tx.Commit(ctx)
-}
-
-// percentile uses the nearest-rank method on an ascending slice.
-func percentile(sorted []time.Duration, p float64) time.Duration {
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	return sorted[max(idx, 0)]
 }

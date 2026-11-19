@@ -1,0 +1,60 @@
+search_kopi: before and after migrations/003_indexes.sql
+date:     2026-11-20T03:37:36+07:00
+query:    benchmark/search_kopi.sql
+before:   products_name_trgm_idx, products_sku_trgm_idx dropped
+after:    migration applied
+method:   each side on a fresh copy of pos; cold EXPLAIN (ANALYZE, BUFFERS),
+          20 timed warm runs reading every row, then warm EXPLAIN (ANALYZE, BUFFERS)
+
+                min        avg        p50        p95   cold_hit  cold_read   warm_hit  warm_read
+before       0.50ms     0.83ms     0.54ms     1.58ms         32          0         32          0
+after        0.61ms     1.23ms     1.22ms     1.73ms         32          0         32          0
+
+cold_hit/cold_read = first EXPLAIN before cache warmup; warm_hit/warm_read = EXPLAIN after warm runs (touches, not distinct pages)
+
+=== query
+SELECT p.id, p.sku, p.name, p.category, p.price, s.qty
+FROM products p
+JOIN stocks s ON s.outlet_id = 1 AND s.product_id = p.id
+WHERE p.id > 0
+  AND (p.name ILIKE '%kopi%' OR p.sku ILIKE '%kopi%')
+ORDER BY p.id
+LIMIT 21;
+
+=== before (cold EXPLAIN)
+Limit  (cost=0.57..123.46 rows=21 width=52) (actual time=0.040..0.419 rows=21 loops=1)
+  Buffers: shared hit=32
+  ->  Merge Join  (cost=0.57..1475.24 rows=252 width=52) (actual time=0.039..0.416 rows=21 loops=1)
+        Merge Cond: (p.id = s.product_id)
+        Buffers: shared hit=32
+        ->  Index Scan using products_pkey on products p  (cost=0.28..229.78 rows=253 width=48) (actual time=0.013..0.274 rows=21 loops=1)
+              Index Cond: (id > 0)
+              Filter: ((name ~~* '%kopi%'::text) OR (sku ~~* '%kopi%'::text))
+              Rows Removed by Filter: 382
+              Buffers: shared hit=7
+        ->  Index Scan using stocks_pkey on stocks s  (cost=0.29..1229.84 rows=4988 width=8) (actual time=0.023..0.117 rows=403 loops=1)
+              Index Cond: (outlet_id = 1)
+              Buffers: shared hit=25
+Planning:
+  Buffers: shared hit=78 read=1
+Planning Time: 0.475 ms
+Execution Time: 0.471 ms
+
+=== after (cold EXPLAIN)
+Limit  (cost=0.57..123.46 rows=21 width=52) (actual time=0.030..0.364 rows=21 loops=1)
+  Buffers: shared hit=32
+  ->  Merge Join  (cost=0.57..1475.24 rows=252 width=52) (actual time=0.029..0.361 rows=21 loops=1)
+        Merge Cond: (p.id = s.product_id)
+        Buffers: shared hit=32
+        ->  Index Scan using products_pkey on products p  (cost=0.28..229.78 rows=253 width=48) (actual time=0.009..0.251 rows=21 loops=1)
+              Index Cond: (id > 0)
+              Filter: ((name ~~* '%kopi%'::text) OR (sku ~~* '%kopi%'::text))
+              Rows Removed by Filter: 382
+              Buffers: shared hit=7
+        ->  Index Scan using stocks_pkey on stocks s  (cost=0.29..1229.84 rows=4988 width=8) (actual time=0.019..0.088 rows=403 loops=1)
+              Index Cond: (outlet_id = 1)
+              Buffers: shared hit=25
+Planning:
+  Buffers: shared hit=101
+Planning Time: 0.419 ms
+Execution Time: 0.383 ms

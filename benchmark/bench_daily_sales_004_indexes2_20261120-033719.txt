@@ -1,0 +1,68 @@
+daily_sales: before and after migrations/004_indexes2.sql
+date:     2026-11-20T03:37:19+07:00
+query:    benchmark/daily_sales.sql
+before:   transactions_paid_outlet_created_idx, transaction_items_transaction_idx dropped
+after:    migration applied
+method:   each side on a fresh copy of pos; cold EXPLAIN (ANALYZE, BUFFERS),
+          20 timed warm runs reading every row, then warm EXPLAIN (ANALYZE, BUFFERS)
+
+                min        avg        p50        p95   cold_hit  cold_read   warm_hit  warm_read
+before      11.41ms    13.50ms    13.34ms    15.09ms       2154       2920       3486       1588
+after        3.65ms     6.08ms     4.86ms     9.15ms          1         38         39          0
+
+cold_hit/cold_read = first EXPLAIN before cache warmup; warm_hit/warm_read = EXPLAIN after warm runs (touches, not distinct pages)
+
+=== query
+SELECT to_char(created_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD') AS day,
+       count(*),
+       sum(total)::bigint,
+       round(avg(total))::bigint
+FROM transactions
+WHERE outlet_id = 1 AND status = 'PAID'
+  AND created_at >= '2026-01-01 00:00:00+07'
+  AND created_at <  '2026-04-01 00:00:00+07'
+GROUP BY day
+ORDER BY day;
+
+=== before (cold EXPLAIN)
+Finalize GroupAggregate  (cost=8683.81..9694.81 rows=7046 width=56) (actual time=11.804..13.606 rows=90 loops=1)
+  Group Key: (to_char((created_at AT TIME ZONE 'Asia/Jakarta'::text), 'YYYY-MM-DD'::text))
+  Buffers: shared hit=2154 read=2920
+  ->  Gather Merge  (cost=8683.81..9442.33 rows=5872 width=104) (actual time=11.723..13.448 rows=270 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=2154 read=2920
+        ->  Partial GroupAggregate  (cost=7683.79..7764.53 rows=2936 width=104) (actual time=9.266..9.522 rows=90 loops=3)
+              Group Key: (to_char((created_at AT TIME ZONE 'Asia/Jakarta'::text), 'YYYY-MM-DD'::text))
+              Buffers: shared hit=2154 read=2920
+              ->  Sort  (cost=7683.79..7691.13 rows=2936 width=40) (actual time=9.244..9.317 rows=2398 loops=3)
+                    Sort Key: (to_char((created_at AT TIME ZONE 'Asia/Jakarta'::text), 'YYYY-MM-DD'::text))
+                    Sort Method: quicksort  Memory: 217kB
+                    Buffers: shared hit=2154 read=2920
+                    Worker 0:  Sort Method: quicksort  Memory: 203kB
+                    Worker 1:  Sort Method: quicksort  Memory: 206kB
+                    ->  Parallel Seq Scan on transactions  (cost=0.00..7514.68 rows=2936 width=40) (actual time=1.758..7.916 rows=2398 loops=3)
+                          Filter: ((created_at >= '2025-12-31 17:00:00+00'::timestamp with time zone) AND (created_at < '2026-03-31 17:00:00+00'::timestamp with time zone) AND (outlet_id = 1) AND (status = 'PAID'::text))
+                          Rows Removed by Filter: 97602
+                          Buffers: shared hit=2080 read=2920
+Planning:
+  Buffers: shared hit=73
+Planning Time: 0.310 ms
+Execution Time: 13.673 ms
+
+=== after (cold EXPLAIN)
+GroupAggregate  (cost=821.26..1096.37 rows=7336 width=56) (actual time=3.356..4.053 rows=90 loops=1)
+  Group Key: (to_char((created_at AT TIME ZONE 'Asia/Jakarta'::text), 'YYYY-MM-DD'::text))
+  Buffers: shared hit=1 read=38
+  ->  Sort  (cost=821.26..839.60 rows=7337 width=40) (actual time=3.339..3.572 rows=7195 loops=1)
+        Sort Key: (to_char((created_at AT TIME ZONE 'Asia/Jakarta'::text), 'YYYY-MM-DD'::text))
+        Sort Method: quicksort  Memory: 530kB
+        Buffers: shared hit=1 read=38
+        ->  Index Only Scan using transactions_paid_outlet_created_idx on transactions  (cost=0.42..350.19 rows=7337 width=40) (actual time=0.168..2.777 rows=7195 loops=1)
+              Index Cond: ((outlet_id = 1) AND (created_at >= '2025-12-31 17:00:00+00'::timestamp with time zone) AND (created_at < '2026-03-31 17:00:00+00'::timestamp with time zone))
+              Heap Fetches: 0
+              Buffers: shared hit=1 read=38
+Planning:
+  Buffers: shared hit=86
+Planning Time: 0.280 ms
+Execution Time: 4.081 ms

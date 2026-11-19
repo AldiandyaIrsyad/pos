@@ -127,20 +127,22 @@ func formatReport(m benchdb.Migration, results []result) string {
 	fmt.Fprintf(&b, "Top products query: legacy, rewrite, rewrite + index\n")
 	fmt.Fprintf(&b, "date:     %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(&b, "index:    migrations/%s (%s)\n", m.File, strings.Join(m.Indexes, ", "))
-	fmt.Fprintf(&b, "method:   each variant on a fresh copy of pos; one EXPLAIN (ANALYZE, BUFFERS) warms the cache,\n")
-	fmt.Fprintf(&b, "          then timed runs read every row, as the API would\n")
-	fmt.Fprintf(&b, "pages:    shared buffers touched by the whole plan (hit = cache, read = from OS/disk)\n\n")
+	fmt.Fprintf(&b, "method:   each variant on a fresh copy of pos; cold EXPLAIN (ANALYZE, BUFFERS),\n")
+	fmt.Fprintf(&b, "          timed warm runs reading every row, then warm EXPLAIN (ANALYZE, BUFFERS)\n")
+	fmt.Fprintf(&b, "pages:    cold = cold EXPLAIN (hit+read); warm = warm EXPLAIN (hit+read)\n\n")
 
-	fmt.Fprintf(&b, "%-29s %5s %10s %10s %10s %10s %12s %10s\n", "variant", "runs", "min", "avg", "p50", "p95", "pages", "vs 1")
+	fmt.Fprintf(&b, "%-29s %5s %10s %10s %10s %10s %12s %12s %10s\n", "variant", "runs", "min", "avg", "p50", "p95", "cold_read", "warm_pages", "vs 1")
 	base := results[0].Avg
 	for _, r := range results {
-		fmt.Fprintf(&b, "%-29s %5d %10s %10s %10s %10s %12d %9.0fx\n",
-			r.name, r.runs, benchdb.Short(r.Min), benchdb.Short(r.Avg), benchdb.Short(r.P50), benchdb.Short(r.P95), r.Hit+r.Read, float64(base)/float64(r.Avg))
+		fmt.Fprintf(&b, "%-29s %5d %10s %10s %10s %10s %12d %12d %9.0fx\n",
+			r.name, r.runs, benchdb.Short(r.Min), benchdb.Short(r.Avg), benchdb.Short(r.P50), benchdb.Short(r.P95),
+			r.ColdRead, r.WarmHit+r.WarmRead, float64(base)/float64(r.Avg))
 	}
 	fmt.Fprintf(&b, "\nqueries:  %s, %s\n", filepath.Base(results[0].sqlFile), filepath.Base(results[1].sqlFile))
 
 	for _, r := range results {
-		fmt.Fprintf(&b, "\n=== %s (%s) | pages hit=%d read=%d\n%s\n", r.name, filepath.Base(r.sqlFile), r.Hit, r.Read, r.Plan)
+		fmt.Fprintf(&b, "\n=== %s (%s) | cold hit=%d read=%d | warm hit=%d read=%d\n%s\n",
+			r.name, filepath.Base(r.sqlFile), r.ColdHit, r.ColdRead, r.WarmHit, r.WarmRead, r.Plan)
 	}
 	return b.String()
 }

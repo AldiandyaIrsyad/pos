@@ -1,0 +1,148 @@
+Top products query: legacy, rewrite, rewrite + index
+date:     2026-11-20T03:50:21+07:00
+index:    migrations/004_indexes2.sql (transactions_paid_outlet_created_idx, transaction_items_transaction_idx)
+method:   each variant on a fresh copy of pos; cold EXPLAIN (ANALYZE, BUFFERS),
+          timed warm runs reading every row, then warm EXPLAIN (ANALYZE, BUFFERS)
+pages:    cold = cold EXPLAIN (hit+read); warm = warm EXPLAIN (hit+read)
+
+variant                        runs        min        avg        p50        p95    cold_read   warm_pages       vs 1
+1 legacy query, no index          1     159.4s     159.4s     159.4s     159.4s     33387127     48184178         1x
+2 rewritten query, no index      10    36.91ms    49.58ms    47.00ms    65.34ms         9584        13804      3215x
+3 rewritten query + index        10    13.42ms    14.19ms    13.95ms    15.59ms         4305        24110     11236x
+
+queries:  legacy.sql, proposed.sql
+
+=== 1 legacy query, no index (legacy.sql) | cold hit=14797051 read=33387127 | warm hit=15439138 read=32745040
+Limit  (cost=117838192.79..118309544.88 rows=10 width=61) (actual time=157719.801..158064.569 rows=10 loops=1)
+  Buffers: shared hit=14797051 read=33387127 dirtied=1
+  ->  Result  (cost=117838192.79..353514237.27 rows=5000 width=61) (actual time=157515.930..157860.687 rows=10 loops=1)
+        Buffers: shared hit=14797051 read=33387127 dirtied=1
+        ->  Sort  (cost=117838192.79..117838205.29 rows=5000 width=29) (actual time=157462.965..157462.982 rows=10 loops=1)
+              Sort Key: ((SubPlan 1)) DESC NULLS LAST
+              Sort Method: top-N heapsort  Memory: 25kB
+              Buffers: shared hit=14592355 read=33320807 dirtied=1
+              ->  Seq Scan on products p  (cost=0.00..117838084.74 rows=5000 width=29) (actual time=53.957..157448.908 rows=5000 loops=1)
+                    Buffers: shared hit=14592355 read=33320807 dirtied=1
+                    SubPlan 1
+                      ->  Aggregate  (cost=23567.59..23567.60 rows=1 width=8) (actual time=31.484..31.484 rows=1 loops=5000)
+                            Buffers: shared hit=14592305 read=33320807
+                            ->  Nested Loop  (cost=0.42..23567.58 rows=1 width=4) (actual time=8.957..31.478 rows=5 loops=5000)
+                                  Buffers: shared hit=14592305 read=33320807
+                                  ->  Seq Scan on transaction_items ti  (cost=0.00..21847.47 rows=211 width=12) (actual time=0.243..30.801 rows=210 loops=5000)
+                                        Filter: (product_id = p.id)
+                                        Rows Removed by Filter: 1048068
+                                        Buffers: shared hit=10400000 read=33320000
+                                  ->  Index Scan using transactions_pkey on transactions t  (cost=0.42..8.15 rows=1 width=8) (actual time=0.003..0.003 rows=0 loops=1048278)
+                                        Index Cond: (id = ti.transaction_id)
+                                        Filter: ((outlet_id = 1) AND (status = 'PAID'::text) AND (date(created_at) >= '2026-01-01'::date) AND (date(created_at) <= '2026-03-31'::date))
+                                        Rows Removed by Filter: 1
+                                        Buffers: shared hit=4192305 read=807
+        SubPlan 2
+          ->  Aggregate  (cost=23567.59..23567.60 rows=1 width=32) (actual time=39.761..39.761 rows=1 loops=10)
+                Buffers: shared hit=204696 read=66320
+                ->  Nested Loop  (cost=0.42..23567.58 rows=1 width=8) (actual time=0.380..39.730 rows=111 loops=10)
+                      Buffers: shared hit=204696 read=66320
+                      ->  Seq Scan on transaction_items ti_1  (cost=0.00..21847.47 rows=211 width=16) (actual time=0.021..32.176 rows=4589 loops=10)
+                            Filter: (product_id = p.id)
+                            Rows Removed by Filter: 1043689
+                            Buffers: shared hit=21120 read=66320
+                      ->  Index Scan using transactions_pkey on transactions t_1  (cost=0.42..8.15 rows=1 width=8) (actual time=0.001..0.001 rows=0 loops=45894)
+                            Index Cond: (id = ti_1.transaction_id)
+                            Filter: ((outlet_id = 1) AND (status = 'PAID'::text) AND (date(created_at) >= '2026-01-01'::date) AND (date(created_at) <= '2026-03-31'::date))
+                            Rows Removed by Filter: 1
+                            Buffers: shared hit=183576
+Planning:
+  Buffers: shared hit=148
+Planning Time: 0.435 ms
+JIT:
+  Functions: 31
+  Options: Inlining true, Optimization true, Expressions true, Deforming true
+  Timing: Generation 0.615 ms, Inlining 56.121 ms, Optimization 78.318 ms, Emission 69.527 ms, Total 204.581 ms
+Execution Time: 158266.954 ms
+
+=== 2 rewritten query, no index (proposed.sql) | cold hit=4220 read=9584 | warm hit=6300 read=7504
+Nested Loop  (cost=24197.16..24272.01 rows=10 width=65) (actual time=54.677..54.854 rows=10 loops=1)
+  Buffers: shared hit=4220 read=9584
+  ->  Limit  (cost=24196.88..24196.90 rows=10 width=44) (actual time=54.626..54.793 rows=10 loops=1)
+        Buffers: shared hit=4190 read=9584
+        ->  Sort  (cost=24196.88..24209.28 rows=4962 width=44) (actual time=54.624..54.790 rows=10 loops=1)
+              Sort Key: (sum(ti.qty)) DESC, ti.product_id
+              Sort Method: top-N heapsort  Memory: 26kB
+              Buffers: shared hit=4190 read=9584
+              ->  Finalize HashAggregate  (cost=24027.63..24089.65 rows=4962 width=44) (actual time=53.744..54.472 rows=4818 loops=1)
+                    Group Key: ti.product_id
+                    Batches: 1  Memory Usage: 977kB
+                    Buffers: shared hit=4190 read=9584
+                    ->  Gather  (cost=22873.96..23928.39 rows=9924 width=44) (actual time=49.581..51.233 rows=10806 loops=1)
+                          Workers Planned: 2
+                          Workers Launched: 2
+                          Buffers: shared hit=4190 read=9584
+                          ->  Partial HashAggregate  (cost=21873.96..21935.99 rows=4962 width=44) (actual time=47.366..48.033 rows=3602 loops=3)
+                                Group Key: ti.product_id
+                                Batches: 1  Memory Usage: 977kB
+                                Buffers: shared hit=4190 read=9584
+                                Worker 0:  Batches: 1  Memory Usage: 977kB
+                                Worker 1:  Batches: 1  Memory Usage: 977kB
+                                ->  Parallel Hash Join  (cost=7537.32..21795.71 rows=10433 width=16) (actual time=7.985..45.274 rows=8371 loops=3)
+                                      Hash Cond: (ti.transaction_id = t.id)
+                                      Buffers: shared hit=4190 read=9584
+                                      ->  Parallel Seq Scan on transaction_items ti  (cost=0.00..13111.83 rows=436782 width=24) (actual time=0.027..17.884 rows=349426 loops=3)
+                                            Buffers: shared hit=2080 read=6664
+                                      ->  Parallel Hash  (cost=7500.00..7500.00 rows=2986 width=8) (actual time=7.700..7.700 rows=2398 loops=3)
+                                            Buckets: 8192  Batches: 1  Memory Usage: 384kB
+                                            Buffers: shared hit=2080 read=2920
+                                            ->  Parallel Seq Scan on transactions t  (cost=0.00..7500.00 rows=2986 width=8) (actual time=1.856..7.255 rows=2398 loops=3)
+                                                  Filter: ((created_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-04-01 00:00:00+00'::timestamp with time zone) AND (outlet_id = 1) AND (status = 'PAID'::text))
+                                                  Rows Removed by Filter: 97602
+                                                  Buffers: shared hit=2080 read=2920
+  ->  Index Scan using products_pkey on products p  (cost=0.28..7.50 rows=1 width=21) (actual time=0.005..0.005 rows=1 loops=10)
+        Index Cond: (id = ti.product_id)
+        Buffers: shared hit=30
+Planning:
+  Buffers: shared hit=168 read=1
+Planning Time: 0.448 ms
+Execution Time: 54.916 ms
+
+=== 3 rewritten query + index (proposed.sql) | cold hit=19805 read=4305 | warm hit=24110 read=0
+Nested Loop  (cost=16628.79..16703.63 rows=10 width=65) (actual time=20.167..20.297 rows=10 loops=1)
+  Buffers: shared hit=19805 read=4305
+  ->  Limit  (cost=16628.50..16628.53 rows=10 width=44) (actual time=20.110..20.233 rows=10 loops=1)
+        Buffers: shared hit=19778 read=4302
+        ->  Sort  (cost=16628.50..16640.92 rows=4965 width=44) (actual time=20.109..20.230 rows=10 loops=1)
+              Sort Key: (sum(ti.qty)) DESC, ti.product_id
+              Sort Method: top-N heapsort  Memory: 26kB
+              Buffers: shared hit=19778 read=4302
+              ->  Finalize HashAggregate  (cost=16459.15..16521.21 rows=4965 width=44) (actual time=19.287..19.927 rows=4818 loops=1)
+                    Group Key: ti.product_id
+                    Batches: 1  Memory Usage: 977kB
+                    Buffers: shared hit=19778 read=4302
+                    ->  Gather  (cost=15304.79..16359.85 rows=9930 width=44) (actual time=15.922..17.157 rows=10851 loops=1)
+                          Workers Planned: 2
+                          Workers Launched: 2
+                          Buffers: shared hit=19778 read=4302
+                          ->  Partial HashAggregate  (cost=14304.79..14366.85 rows=4965 width=44) (actual time=13.845..14.408 rows=3617 loops=3)
+                                Group Key: ti.product_id
+                                Batches: 1  Memory Usage: 977kB
+                                Buffers: shared hit=19778 read=4302
+                                Worker 0:  Batches: 1  Memory Usage: 977kB
+                                Worker 1:  Batches: 1  Memory Usage: 977kB
+                                ->  Nested Loop  (cost=236.25..14226.50 rows=10438 width=16) (actual time=0.441..12.151 rows=8371 loops=3)
+                                      Buffers: shared hit=19778 read=4302
+                                      ->  Parallel Bitmap Heap Scan on transactions t  (cost=235.83..5550.32 rows=2987 width=8) (actual time=0.407..2.245 rows=2398 loops=3)
+                                            Recheck Cond: ((outlet_id = 1) AND (created_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-04-01 00:00:00+00'::timestamp with time zone) AND (status = 'PAID'::text))
+                                            Heap Blocks: exact=879
+                                            Buffers: shared hit=2037 read=370
+                                            ->  Bitmap Index Scan on transactions_paid_outlet_created_idx  (cost=0.00..234.04 rows=7169 width=0) (actual time=0.789..0.789 rows=7195 loops=1)
+                                                  Index Cond: ((outlet_id = 1) AND (created_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-04-01 00:00:00+00'::timestamp with time zone))
+                                                  Buffers: shared read=38
+                                      ->  Index Only Scan using transaction_items_transaction_idx on transaction_items ti  (cost=0.42..2.86 rows=4 width=24) (actual time=0.004..0.004 rows=3 loops=7195)
+                                            Index Cond: (transaction_id = t.id)
+                                            Heap Fetches: 6
+                                            Buffers: shared hit=17741 read=3932
+  ->  Index Scan using products_pkey on products p  (cost=0.28..7.50 rows=1 width=21) (actual time=0.006..0.006 rows=1 loops=10)
+        Index Cond: (id = ti.product_id)
+        Buffers: shared hit=27 read=3
+Planning:
+  Buffers: shared hit=185 read=7
+Planning Time: 0.524 ms
+Execution Time: 20.353 ms

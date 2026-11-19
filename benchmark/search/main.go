@@ -13,7 +13,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,9 +26,19 @@ import (
 	"github.com/AldiandyaIrsyad/benchmark/internal/benchdb"
 )
 
-// Terms a cashier would type: product names, SKU fragments, a name with a
-// space, and one that matches nothing (the scan can't stop early).
+// Terms a cashier would type: common names (PK early stop), SKU/number fragments,
+// rare terms, and misses (trigram bitmap scan).
 var terms = []string{"kopi", "indomie", "teh botol", "shampo", "roti", "gold", "sku-0012", "3675", "zzzz"}
+
+// Extra queries exercising category filtering and cursor pagination.
+var extraQueries = []struct {
+	q, category, cursor string
+}{
+	{"kopi", "Minuman", ""},
+	{"kopi", "Minuman", "2500"},
+	{"sku-0049", "", "4000"},
+	{"zzzz", "Snack", ""},
+}
 
 type request struct {
 	path  string
@@ -70,6 +79,21 @@ func run(api string, passes, outlets, concurrency int) error {
 				short: len([]rune(q)) < 3,
 			})
 		}
+	}
+	for _, ex := range extraQueries {
+		outlet := i%outlets + 1
+		i++
+		params := url.Values{"outlet_id": {fmt.Sprint(outlet)}, "limit": {"20"}, "q": {ex.q}}
+		if ex.category != "" {
+			params.Set("category", ex.category)
+		}
+		if ex.cursor != "" {
+			params.Set("cursor", ex.cursor)
+		}
+		reqs = append(reqs, request{
+			path:  fmt.Sprintf("%s/products?%s", api, params.Encode()),
+			short: len([]rune(ex.q)) < 3,
+		})
 	}
 	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: concurrency}}
 
@@ -174,13 +198,6 @@ func writeRow(b *strings.Builder, name string, samples []sample, keep func(sampl
 	}
 	slices.Sort(ds)
 	fmt.Fprintf(b, "%-26s %6d %9s %9s %9s %9s %9s\n", name, len(ds),
-		ms(ds[0]), ms(percentile(ds, 0.50)), ms(percentile(ds, 0.95)), ms(percentile(ds, 0.99)), ms(ds[len(ds)-1]))
-}
-
-func ms(d time.Duration) string { return fmt.Sprintf("%.2fms", float64(d)/float64(time.Millisecond)) }
-
-// percentile uses the nearest-rank method on an ascending slice.
-func percentile(sorted []time.Duration, p float64) time.Duration {
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	return sorted[max(idx, 0)]
+		benchdb.Ms(ds[0]), benchdb.Ms(benchdb.Percentile(ds, 0.50)), benchdb.Ms(benchdb.Percentile(ds, 0.95)),
+		benchdb.Ms(benchdb.Percentile(ds, 0.99)), benchdb.Ms(ds[len(ds)-1]))
 }

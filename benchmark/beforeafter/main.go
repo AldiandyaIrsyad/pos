@@ -89,18 +89,19 @@ func run(sqlPath, migrationPath, dsn string, n int) error {
 	fmt.Fprintf(&b, "query:    benchmark/%s\n", filepath.Base(sqlPath))
 	fmt.Fprintf(&b, "before:   %s dropped\n", strings.Join(m.Indexes, ", "))
 	fmt.Fprintf(&b, "after:    migration applied\n")
-	fmt.Fprintf(&b, "method:   each side on a fresh copy of pos; one EXPLAIN (ANALYZE, BUFFERS) warms the cache,\n")
-	fmt.Fprintf(&b, "          then %d timed runs read every row\n\n", n)
-	fmt.Fprintf(&b, "%-8s %10s %10s %10s %10s %10s %10s\n", "", "min", "avg", "p50", "p95", "hit", "read")
+	fmt.Fprintf(&b, "method:   each side on a fresh copy of pos; cold EXPLAIN (ANALYZE, BUFFERS),\n")
+	fmt.Fprintf(&b, "          %d timed warm runs reading every row, then warm EXPLAIN (ANALYZE, BUFFERS)\n\n", n)
+	fmt.Fprintf(&b, "%-8s %10s %10s %10s %10s %10s %10s %10s %10s\n", "", "min", "avg", "p50", "p95", "cold_hit", "cold_read", "warm_hit", "warm_read")
 	for i, name := range []string{"before", "after"} {
 		r := results[i]
-		fmt.Fprintf(&b, "%-8s %10s %10s %10s %10s %10d %10d\n", name,
-			benchdb.Short(r.Min), benchdb.Short(r.Avg), benchdb.Short(r.P50), benchdb.Short(r.P95), r.Hit, r.Read)
+		fmt.Fprintf(&b, "%-8s %10s %10s %10s %10s %10d %10d %10d %10d\n", name,
+			benchdb.Short(r.Min), benchdb.Short(r.Avg), benchdb.Short(r.P50), benchdb.Short(r.P95),
+			r.ColdHit, r.ColdRead, r.WarmHit, r.WarmRead)
 	}
-	fmt.Fprintf(&b, "\nhit = pages from cache, read = pages from OS/disk (touches, not distinct pages)\n")
+	fmt.Fprintf(&b, "\ncold_hit/cold_read = first EXPLAIN before cache warmup; warm_hit/warm_read = EXPLAIN after warm runs (touches, not distinct pages)\n")
 	fmt.Fprintf(&b, "\n=== query\n%s\n", query)
-	fmt.Fprintf(&b, "\n=== before\n%s\n", results[0].Plan)
-	fmt.Fprintf(&b, "\n=== after\n%s\n", results[1].Plan)
+	fmt.Fprintf(&b, "\n=== before (cold EXPLAIN)\n%s\n", results[0].Plan)
+	fmt.Fprintf(&b, "\n=== after (cold EXPLAIN)\n%s\n", results[1].Plan)
 
 	report := b.String()
 	fmt.Print("\n" + report)
