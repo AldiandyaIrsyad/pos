@@ -14,12 +14,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
-	"regexp"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,9 +33,7 @@ type variant struct {
 
 type result struct {
 	variant
-	plan               string
-	hit, read          int64 // root node buffer pages
-	min, avg, p50, p95 time.Duration
+	benchdb.Result
 }
 
 func main() {
@@ -124,50 +118,8 @@ func measure(ctx context.Context, admin *pgx.Conn, cfg *pgx.ConnConfig, m benchd
 		return result{}, err
 	}
 
-	r := result{variant: s}
-	rows, _ := conn.Query(ctx, "EXPLAIN (ANALYZE, BUFFERS) "+query)
-	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return result{}, err
-	}
-	r.plan = strings.Join(lines, "\n")
-	r.hit, r.read = rootBuffers(lines)
-
-	durations := make([]time.Duration, s.runs)
-	for i := range durations {
-		start := time.Now()
-		rows, _ := conn.Query(ctx, query)
-		for rows.Next() {
-		}
-		if err := rows.Err(); err != nil {
-			return result{}, err
-		}
-		durations[i] = time.Since(start)
-		fmt.Printf("  run %d/%d: %s\n", i+1, s.runs, durations[i])
-	}
-	slices.Sort(durations)
-	var total time.Duration
-	for _, d := range durations {
-		total += d
-	}
-	r.min, r.avg = durations[0], total/time.Duration(len(durations))
-	r.p50, r.p95 = percentile(durations, 0.50), percentile(durations, 0.95)
-	return r, nil
-}
-
-var buffersRe = regexp.MustCompile(`Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?`)
-
-// rootBuffers returns the page counts of the plan's top node, which include
-// every node below it.
-func rootBuffers(plan []string) (hit, read int64) {
-	for _, line := range plan {
-		if m := buffersRe.FindStringSubmatch(line); m != nil {
-			hit, _ = strconv.ParseInt(m[1], 10, 64)
-			read, _ = strconv.ParseInt(m[2], 10, 64)
-			return hit, read
-		}
-	}
-	return 0, 0
+	res, err := benchdb.Measure(ctx, conn, query, s.runs)
+	return result{variant: s, Result: res}, err
 }
 
 func formatReport(m benchdb.Migration, results []result) string {
@@ -180,28 +132,15 @@ func formatReport(m benchdb.Migration, results []result) string {
 	fmt.Fprintf(&b, "pages:    shared buffers touched by the whole plan (hit = cache, read = from OS/disk)\n\n")
 
 	fmt.Fprintf(&b, "%-29s %5s %10s %10s %10s %10s %12s %10s\n", "variant", "runs", "min", "avg", "p50", "p95", "pages", "vs 1")
-	base := results[0].avg
+	base := results[0].Avg
 	for _, r := range results {
 		fmt.Fprintf(&b, "%-29s %5d %10s %10s %10s %10s %12d %9.0fx\n",
-			r.name, r.runs, short(r.min), short(r.avg), short(r.p50), short(r.p95), r.hit+r.read, float64(base)/float64(r.avg))
+			r.name, r.runs, benchdb.Short(r.Min), benchdb.Short(r.Avg), benchdb.Short(r.P50), benchdb.Short(r.P95), r.Hit+r.Read, float64(base)/float64(r.Avg))
 	}
 	fmt.Fprintf(&b, "\nqueries:  %s, %s\n", filepath.Base(results[0].sqlFile), filepath.Base(results[1].sqlFile))
 
 	for _, r := range results {
-		fmt.Fprintf(&b, "\n=== %s (%s) | pages hit=%d read=%d\n%s\n", r.name, filepath.Base(r.sqlFile), r.hit, r.read, r.plan)
+		fmt.Fprintf(&b, "\n=== %s (%s) | pages hit=%d read=%d\n%s\n", r.name, filepath.Base(r.sqlFile), r.Hit, r.Read, r.Plan)
 	}
 	return b.String()
-}
-
-func short(d time.Duration) string {
-	if d >= time.Second {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	return fmt.Sprintf("%.2fms", float64(d)/float64(time.Millisecond))
-}
-
-// percentile uses the nearest-rank method on an ascending slice.
-func percentile(sorted []time.Duration, p float64) time.Duration {
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	return sorted[max(idx, 0)]
 }
