@@ -1,0 +1,19 @@
+Checkout load test: one hot product, through the HTTP API
+date:        2026-11-19T14:48:06+07:00
+api:         http://localhost:8080
+setup:       1000 checkouts of qty 1 from 50 concurrent clients, one product, starting stock 800
+             each request has its own Idempotency-Key; fixture created and deleted by the tool
+
+status
+  201 Created                   800
+  409 Conflict                  200
+
+throughput  236.7 requests/s (wall 4.225s)
+latency     min 2.7ms  avg 211.1ms  p50 206.6ms  p95 432.0ms  p99 588.7ms  max 852.7ms
+
+checks
+  PASS  final stock 0 is not negative
+  PASS  final stock 0 = starting 800 - 800 sold
+  PASS  800 transactions recorded for 800 x 201
+  PASS  every request answered 201, 409 or 503
+  PASS  409 only once stock ran out (final stock 0)
