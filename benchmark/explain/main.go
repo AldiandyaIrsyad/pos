@@ -40,7 +40,7 @@ func run(sqlpath, dsn string) error {
 
 	// clean query
 	query := strings.TrimSpace(string(rawSQL))
-	query = "EXPLAIN (ANALYZE) " + query
+	query = "EXPLAIN (ANALYZE, BUFFERS) " + query
 
 	// create connection
 	ctx := context.Background()
