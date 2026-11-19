@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { searchProducts, type Product } from '../api'
 import { formatNumber, formatRupiah } from '../format'
@@ -13,9 +13,11 @@ export default function ProductSearch({ outletId, onAdd, disabled = false }: Pro
   // Each (outlet, q) pair is its own cache entry, so a slow response for an
   // older q can never show up as the result for the current one. When the key
   // changes, TanStack aborts the previous request through `signal`.
-  const products = useQuery({
+  const products = useInfiniteQuery({
     queryKey: ['products', outletId, q],
-    queryFn: ({ signal }) => searchProducts(outletId, q, signal),
+    queryFn: ({ pageParam, signal }) => searchProducts(outletId, q, pageParam, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     enabled: q !== '',
     placeholderData: keepPreviousData, // keep old rows on screen while typing
   })
@@ -34,31 +36,48 @@ export default function ProductSearch({ outletId, onAdd, disabled = false }: Pro
       ) : (
         <AsyncView
           query={products}
-          isEmpty={(page) => page.items.length === 0}
+          isEmpty={(data) => data.pages.every((page) => page.items.length === 0)}
           emptyText={`No products match “${q}”.`}
         >
-          {(page) => (
-            <ul className={`divide-y divide-slate-100 ${products.isPlaceholderData ? 'opacity-60' : ''}`}>
-              {page.items.map((p) => (
-                <li key={p.id} className="flex items-center gap-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{p.name}</p>
-                    <p className="text-xs text-slate-500">
-                      {p.sku} · stock {formatNumber(p.stock)}
-                    </p>
-                  </div>
-                  <span className="text-sm tabular-nums">{formatRupiah(p.price)}</span>
+          {(data) => {
+            const items = data.pages.flatMap((page) => page.items)
+            return (
+              <div className="flex flex-col gap-3">
+                <ul className={`divide-y divide-slate-100 ${products.isPlaceholderData ? 'opacity-60' : ''}`}>
+                  {items.map((p) => (
+                    <li key={p.id} className="flex items-center gap-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">{p.name}</p>
+                        <p className="text-xs text-slate-500">
+                          {p.sku} · stock {formatNumber(p.stock)}
+                        </p>
+                      </div>
+                      <span className="text-sm tabular-nums">{formatRupiah(p.price)}</span>
+                      <button
+                        className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:bg-slate-300"
+                        onClick={() => onAdd(p)}
+                        disabled={disabled || p.stock === 0}
+                      >
+                        {p.stock === 0 ? 'Out' : 'Add'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {products.isFetchNextPageError && (
+                  <p className="text-center text-xs text-red-700">Failed to load more products.</p>
+                )}
+                {products.hasNextPage && !products.isPlaceholderData && (
                   <button
-                    className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:bg-slate-300"
-                    onClick={() => onAdd(p)}
-                    disabled={disabled || p.stock === 0}
+                    className="rounded border border-slate-300 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    onClick={() => products.fetchNextPage()}
+                    disabled={products.isFetchingNextPage}
                   >
-                    {p.stock === 0 ? 'Out' : 'Add'}
+                    {products.isFetchingNextPage ? 'Loading more…' : 'Load more'}
                   </button>
-                </li>
-              ))}
-            </ul>
-          )}
+                )}
+              </div>
+            )
+          }}
         </AsyncView>
       )}
     </section>

@@ -50,6 +50,8 @@ export type TopProductRow = {
 
 export type ReportFilter = { outletId: number; from: string; to: string }
 
+export type TopProductsSort = 'qty' | 'revenue'
+
 // Every non-2xx response. `body` keeps the parsed JSON so callers can read
 // endpoint-specific fields (e.g. short_items on a 409).
 export class ApiError extends Error {
@@ -80,8 +82,9 @@ export function getOutlets(signal?: AbortSignal) {
   return request<Outlet[]>('/outlets', { signal })
 }
 
-export function searchProducts(outletId: number, q: string, signal?: AbortSignal) {
+export function searchProducts(outletId: number, q: string, cursor?: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ outlet_id: String(outletId), q, limit: '20' })
+  if (cursor) params.set('cursor', cursor)
   return request<ProductPage>(`/products?${params}`, { signal })
 }
 
@@ -104,8 +107,9 @@ export function getDailySales(f: ReportFilter, signal?: AbortSignal) {
   return request<DailySalesRow[]>(`/reports/daily-sales?${reportParams(f)}`, { signal })
 }
 
-export function getTopProducts(f: ReportFilter, signal?: AbortSignal) {
+export function getTopProducts(f: ReportFilter, sort: TopProductsSort = 'qty', signal?: AbortSignal) {
   const params = reportParams(f)
   params.set('limit', '10')
+  params.set('sort', sort)
   return request<TopProductRow[]>(`/reports/top-products?${params}`, { signal })
 }

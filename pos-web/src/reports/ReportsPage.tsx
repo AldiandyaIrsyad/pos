@@ -2,23 +2,15 @@ import { useSearchParams } from 'react-router'
 import type { ReportFilter } from '../api'
 import OutletSelect from '../ui/OutletSelect'
 import DailySales from './DailySales'
+import { parseReportFilter, validateReportRange } from './reportFilter'
 import TopProducts from './TopProducts'
-
-// The seed covers 2025-07-01 to 2026-06-30, so a range relative to today can
-// be empty. Default to a fixed quarter inside the seed.
-const DEFAULT_FROM = '2026-01-01'
-const DEFAULT_TO = '2026-03-31'
 
 // Filters live in the URL (?outlet=1&from=...&to=...): a refresh or a shared
 // link shows the same report.
 export default function ReportsPage() {
   const [params, setParams] = useSearchParams()
-  const filter: ReportFilter = {
-    outletId: Number(params.get('outlet') ?? 1),
-    from: params.get('from') ?? DEFAULT_FROM,
-    to: params.get('to') ?? DEFAULT_TO,
-  }
-  const rangeValid = filter.from !== '' && filter.to !== '' && filter.from <= filter.to
+  const filter = parseReportFilter(params)
+  const rangeError = validateReportRange(filter.from, filter.to)
 
   function update(patch: Partial<ReportFilter>) {
     const next = { ...filter, ...patch }
@@ -31,10 +23,10 @@ export default function ReportsPage() {
         <OutletSelect value={filter.outletId} onChange={(outletId) => update({ outletId })} />
         <DateInput label="From" value={filter.from} onChange={(from) => update({ from })} />
         <DateInput label="To" value={filter.to} onChange={(to) => update({ to })} />
-        {!rangeValid && <p className="pb-2 text-sm text-red-700">“From” must be on or before “To”.</p>}
+        {rangeError && <p className="pb-2 text-sm text-red-700">{rangeError}</p>}
       </div>
 
-      {rangeValid && (
+      {!rangeError && (
         <div className="grid gap-6 lg:grid-cols-2">
           <DailySales filter={filter} />
           <TopProducts filter={filter} />
