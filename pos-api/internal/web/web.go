@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func WriteJSON(w http.ResponseWriter, status int, v any) {
@@ -32,7 +34,16 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 }
 
 // ServerError logs the real error with the request ID and hides it from the client.
+// A lock or statement timeout rolls the transaction back, so the client gets a
+// 503 and may retry; a checkout retried with the same Idempotency-Key starts fresh.
 func ServerError(w http.ResponseWriter, r *http.Request, err error) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014") { // lock_not_available, query_canceled
+		slog.Warn("database busy", "request_id", RequestID(r.Context()), "method", r.Method, "path", r.URL.Path, "err", err)
+		w.Header().Set("Retry-After", "1")
+		WriteError(w, http.StatusServiceUnavailable, "the database is busy, please retry")
+		return
+	}
 	slog.Error("internal error", "request_id", RequestID(r.Context()), "method", r.Method, "path", r.URL.Path, "err", err)
 	WriteError(w, http.StatusInternalServerError, "internal error")
 }

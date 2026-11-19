@@ -38,6 +38,9 @@ func TestMain(m *testing.M) {
 	// Enough connections that all 50 checkouts really are in the database at once,
 	// instead of queueing for a connection in the pool.
 	cfg.MaxConns = 60
+	// main.go uses 2s. 1s is still longer than any lock wait in the concurrency
+	// tests, and keeps the 503 test quick.
+	cfg.ConnConfig.RuntimeParams["lock_timeout"] = "1s"
 	testPool, err = pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		panic(err)
@@ -319,6 +322,40 @@ func TestVoidRestoresStockOnce(t *testing.T) {
 	}
 	if code, _ := f.do("POST", "/transactions/999999999/void", "", nil); code != http.StatusNotFound {
 		t.Fatalf("unknown transaction: status %d, want 404", code)
+	}
+}
+
+// A stock row held longer than lock_timeout: the checkout gives up with a
+// retryable 503, writes nothing, and a retry with the same key succeeds.
+func TestCheckoutReturns503WhenStockRowStaysLocked(t *testing.T) {
+	f := newFixture(t, 10)
+	ctx := context.Background()
+	item := lineItem{ProductID: f.products[0], Qty: 1}
+
+	blocker, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	if _, err := blocker.Exec(ctx, `UPDATE stocks SET qty = qty WHERE outlet_id = $1 AND product_id = $2`,
+		f.outletID, item.ProductID); err != nil {
+		t.Fatal(err)
+	}
+
+	key := uuid4()
+	if code, body := f.checkout(key, item); code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body %v, want 503 while the row is locked", code, body)
+	}
+	if f.transactionCount() != 0 {
+		t.Fatal("a timed-out checkout left a transaction")
+	}
+
+	blocker.Rollback(ctx)
+	if code, _ := f.checkout(key, item); code != http.StatusCreated {
+		t.Fatalf("retry with the same key: status = %d, want 201", code)
+	}
+	if f.stock(item.ProductID) != 9 || f.transactionCount() != 1 {
+		t.Fatal("the retry did not record exactly one sale")
 	}
 }
 

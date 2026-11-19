@@ -45,7 +45,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return err
+	}
+	// A checkout waiting on a busy stock row gives up after 2 s and gets a
+	// retryable 503 (see web.ServerError) instead of holding the request open.
+	// No query may run longer than 5 s.
+	cfg.ConnConfig.RuntimeParams["lock_timeout"] = "2s"
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "5s"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return err
 	}
