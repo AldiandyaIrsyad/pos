@@ -212,43 +212,9 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Take the stock, item by item in product_id order. The UPDATE locks the
-	//    row; if another checkout holds it, this one waits, then re-checks
-	//    "qty >= n" against the committed new qty (READ COMMITTED re-evaluates the
-	//    WHERE on the latest row version). So stock can't go below zero, no matter
-	//    how many checkouts race. Keep going after a shortage to report all of them.
-	var short []shortItem
-	for _, it := range items {
-		tag, err := tx.Exec(ctx,
-			`UPDATE stocks SET qty = qty - $3
-			 WHERE outlet_id = $1 AND product_id = $2 AND qty >= $3`,
-			req.OutletID, it.ProductID, it.Qty)
-		if err != nil {
-			web.ServerError(w, r, err)
-			return
-		}
-		if tag.RowsAffected() == 1 {
-			continue
-		}
-		var available int
-		err = tx.QueryRow(ctx, `SELECT qty FROM stocks WHERE outlet_id = $1 AND product_id = $2`,
-			req.OutletID, it.ProductID).Scan(&available)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no stock row: available stays 0
-			web.ServerError(w, r, err)
-			return
-		}
-		short = append(short, shortItem{ProductID: it.ProductID, Requested: it.Qty, Available: available})
-	}
-	if len(short) > 0 {
-		// Rolled back by the defer, key included: a retry is judged against current stock.
-		web.WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":       "insufficient stock",
-			"short_items": short,
-		})
-		return
-	}
-
-	// 4. Record the sale.
+	// 3. Record the sale. This needs no stock row, so it runs before step 4:
+	//    the stock row locks taken there are held until commit, and nothing but
+	//    the commit is left after them. A shortage rolls these inserts back.
 	t := transaction{OutletID: req.OutletID, CashierName: cashier, Status: "PAID", Items: make([]itemLine, len(items))}
 	productIDs := make([]int32, len(items))
 	qtys := make([]int32, len(items))
@@ -280,6 +246,44 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := tx.Exec(ctx, `UPDATE idempotency_keys SET transaction_id = $1 WHERE key = $2`, t.ID, key); err != nil {
 		web.ServerError(w, r, err)
+		return
+	}
+
+	// 4. Take the stock, item by item in product_id order. The UPDATE locks the
+	//    row; if another checkout holds it, this one waits, then re-checks
+	//    "qty >= n" against the committed new qty (READ COMMITTED re-evaluates the
+	//    WHERE on the latest row version). So stock can't go below zero, no matter
+	//    how many checkouts race. Keep going after a shortage to report all of them.
+	var short []shortItem
+	for _, it := range items {
+		tag, err := tx.Exec(ctx,
+			`UPDATE stocks SET qty = qty - $3
+			 WHERE outlet_id = $1 AND product_id = $2 AND qty >= $3`,
+			req.OutletID, it.ProductID, it.Qty)
+		if err != nil {
+			web.ServerError(w, r, err)
+			return
+		}
+		if tag.RowsAffected() == 1 {
+			continue
+		}
+		var available int
+		err = tx.QueryRow(ctx, `SELECT qty FROM stocks WHERE outlet_id = $1 AND product_id = $2`,
+			req.OutletID, it.ProductID).Scan(&available)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no stock row: available stays 0
+			web.ServerError(w, r, err)
+			return
+		}
+		short = append(short, shortItem{ProductID: it.ProductID, Requested: it.Qty, Available: available})
+	}
+	if len(short) > 0 {
+		// Rolled back by the defer: the sale rows and the key are gone, so a retry
+		// is judged against current stock. The transaction id stays used (sequences
+		// don't roll back), which leaves a gap in ids; ids are not receipt numbers.
+		web.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":       "insufficient stock",
+			"short_items": short,
+		})
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
