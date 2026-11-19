@@ -1,0 +1,17 @@
+Product search latency: GET /products through the HTTP API
+date:     2026-11-19T16:08:12+07:00
+api:      http://localhost:8080
+requests: every prefix of ["kopi" "indomie" "teh botol" "shampo" "roti" "gold" "sku-0012" "3675" "zzzz"],
+          outlets 1..10 in turn, limit=20; 50 prefixes x 5 passes per phase, after 1 warmup pass
+target:   p95 < 50 ms
+
+                                n       min       p50       p95       p99       max
+1 client, all                 250    0.00ms    1.08ms    4.05ms    4.45ms    5.07ms
+1 client, q < 3 chars          90    0.00ms    1.05ms    3.81ms    5.07ms    5.07ms
+1 client, q >= 3 chars        160    0.50ms    1.13ms    4.19ms    4.45ms    4.92ms
+10 clients, all               250    1.06ms   10.79ms   28.82ms   30.53ms   31.15ms
+10 clients, q < 3 chars        90    1.17ms   10.70ms   28.61ms   30.97ms   30.97ms
+10 clients, q >= 3 chars      160    1.06ms   10.87ms   28.82ms   30.53ms   31.15ms
+
+latency is measured at the client: HTTP, routing, query and JSON included.
+On Windows the clock advances in ~0.5 ms steps, so values are +-0.5 ms and a min of 0 means under one step.
