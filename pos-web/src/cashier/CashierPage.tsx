@@ -15,6 +15,12 @@ export default function CashierPage() {
 
   const sending = checkout.state.status === 'sending'
   const canCheckout = cart.length > 0 && cashierName.trim() !== '' && !sending
+  // Short items from the last 409 that the current cart still asks too much of.
+  // Editing or removing a row drops it from here, so the warning follows the cart.
+  const shortItems =
+    checkout.state.status === 'short-stock'
+      ? checkout.state.items.filter((s) => cart.some((l) => l.product.id === s.product_id && l.qty > s.available))
+      : []
 
   function updateCart(action: CartAction) {
     // The cart being sent must not change until the server answers.
@@ -59,10 +65,10 @@ export default function CashierPage() {
         <h2 className="font-semibold">Cart</h2>
         <Cart
           cart={cart}
-          shortItems={checkout.state.status === 'short-stock' ? checkout.state.items : []}
+          shortItems={shortItems}
           dispatch={updateCart}
         />
-        <CheckoutStatus state={checkout.state} />
+        <CheckoutStatus state={checkout.state} shortCount={shortItems.length} />
         <button
           className="rounded bg-emerald-600 py-2.5 font-semibold text-white disabled:bg-slate-300"
           onClick={handleCheckout}
@@ -75,7 +81,7 @@ export default function CashierPage() {
   )
 }
 
-function CheckoutStatus({ state }: { state: CheckoutState }) {
+function CheckoutStatus({ state, shortCount }: { state: CheckoutState; shortCount: number }) {
   switch (state.status) {
     case 'idle':
     case 'sending':
@@ -87,9 +93,10 @@ function CheckoutStatus({ state }: { state: CheckoutState }) {
         </p>
       )
     case 'short-stock':
+      if (shortCount === 0) return null
       return (
         <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Not enough stock for {state.items.length} item{state.items.length > 1 ? 's' : ''}. Nothing was charged.
+          Not enough stock for {shortCount} item{shortCount > 1 ? 's' : ''}. Nothing was charged.
           Adjust the marked rows and try again.
         </p>
       )
