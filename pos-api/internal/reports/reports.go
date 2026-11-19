@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,10 +13,22 @@ import (
 	"github.com/AldiandyaIrsyad/pos-api/internal/web"
 )
 
-// Assumed indonesian WIB
-var wib = time.FixedZone("WIB", 7*60*60)
+const (
+	sqlZone       = "Asia/Jakarta"
+	maxReportDays = 366
+)
 
-const sqlZone = "Asia/Jakarta"
+// Both Go date parsing and PostgreSQL AT TIME ZONE use Asia/Jakarta so day
+// boundaries always match, including inside minimal container images.
+var wib = mustLoadZone(sqlZone)
+
+func mustLoadZone(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}
 
 type Handler struct{ db *pgxpool.Pool }
 
@@ -58,7 +71,12 @@ func parseFilter(w http.ResponseWriter, r *http.Request) (filter, bool) {
 		web.WriteError(w, http.StatusBadRequest, "from must be on or before to")
 		return filter{}, false
 	}
-	return filter{outletID: outletID, start: from, end: to.AddDate(0, 0, 1)}, true
+	end := to.AddDate(0, 0, 1)
+	if end.After(from.AddDate(0, 0, maxReportDays)) {
+		web.WriteError(w, http.StatusBadRequest, fmt.Sprintf("date range must be at most %d days", maxReportDays))
+		return filter{}, false
+	}
+	return filter{outletID: outletID, start: from, end: end}, true
 }
 
 type dailyRow struct {

@@ -13,6 +13,9 @@
 ALTER TABLE stocks DROP CONSTRAINT IF EXISTS stocks_qty_non_negative;
 ALTER TABLE stocks ADD CONSTRAINT stocks_qty_non_negative CHECK (qty >= 0);
 
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_status_valid;
+ALTER TABLE transactions ADD CONSTRAINT transactions_status_valid CHECK (status IN ('PAID', 'VOID'));
+
 -- Idempotency
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   key            UUID        PRIMARY KEY,

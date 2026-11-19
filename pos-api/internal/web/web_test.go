@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -86,6 +87,27 @@ func TestServerError(t *testing.T) {
 			}
 			if body["error"] != tc.wantMsg {
 				t.Fatalf("error = %q, want %q", body["error"], tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestServerErrorClientCanceled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"context canceled", context.Canceled},
+		{"pg query_canceled on canceled ctx", &pgconn.PgError{Code: "57014"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/products?outlet_id=1&q=kopi", nil).WithContext(ctx)
+			ServerError(rec, req, tc.err)
+			if rec.Code != 499 || rec.Body.Len() != 0 {
+				t.Fatalf("status=%d body=%q, want 499 with empty body", rec.Code, rec.Body.String())
 			}
 		})
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,6 +49,11 @@ func run() error {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return err
+	}
+	// pgxpool defaults MaxConns to max(4, NumCPU), which starves reads and
+	// unrelated outlets when a few checkouts wait on lock_timeout.
+	if !strings.Contains(dsn, "pool_max_conns") && cfg.MaxConns < 25 {
+		cfg.MaxConns = 25
 	}
 	// A checkout waiting on a busy stock row gives up after 2 s and gets a
 	// retryable 503 (see web.ServerError) instead of holding the request open.

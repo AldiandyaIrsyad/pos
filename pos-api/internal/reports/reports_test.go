@@ -171,6 +171,7 @@ func TestReportValidation(t *testing.T) {
 		"/reports/daily-sales?outlet_id=2147483648&from=2026-01-01&to=2026-01-31",
 		"/reports/daily-sales?" + base + "&from=2026-13-01&to=2026-01-31",
 		"/reports/daily-sales?" + base + "&from=2026-02-01&to=2026-01-31",
+		"/reports/daily-sales?" + base + "&from=2025-01-01&to=2026-01-02",
 		"/reports/top-products?" + base + "&from=2026-01-01&to=2026-01-31&sort=price",
 		"/reports/top-products?" + base + "&from=2026-01-01&to=2026-01-31&limit=0",
 	} {

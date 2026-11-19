@@ -3,7 +3,7 @@ package sales
 // These tests run against a real, migrated Postgres (the concurrency guarantees
 // come from Postgres, so a fake would prove nothing):
 //
-//	DATABASE_URL=postgres://postgres:postgres@localhost:5433/pos go test ./...
+//	DATABASE_URL=postgres://postgres:postgres@localhost:5432/pos go test ./...
 //
 // Each test creates its own outlet and products and deletes them afterwards,
 // so the seed data is left as it was.
@@ -403,8 +403,69 @@ func TestVoidRestoresStockOnce(t *testing.T) {
 	if got := f.stock(f.products[0]); got != 10 {
 		t.Fatalf("stock = %d after voids, want 10", got)
 	}
+	if code, body := f.do("POST", path, "", nil); code != http.StatusOK || len(body["items"].([]any)) != 1 {
+		t.Fatalf("re-void: status %d, body %v", code, body)
+	}
 	if code, _ := f.do("POST", "/transactions/999999999/void", "", nil); code != http.StatusNotFound {
 		t.Fatalf("unknown transaction: status %d, want 404", code)
+	}
+}
+
+// Concurrent checkouts and voids sharing the same products must preserve stock
+// conservation without deadlocking.
+func TestConcurrentCheckoutAndVoidPreserveStock(t *testing.T) {
+	f := newFixture(t, 30, 30)
+	a, b := f.products[0], f.products[1]
+
+	// Seed 10 paid multi-item transactions to void concurrently with new checkouts.
+	voidIDs := make([]int64, 10)
+	for i := range voidIDs {
+		code, body := f.checkout(uuid4(), lineItem{ProductID: a, Qty: 1}, lineItem{ProductID: b, Qty: 1})
+		if code != http.StatusCreated {
+			t.Fatalf("seed checkout %d: status %d", i, code)
+		}
+		voidIDs[i] = int64(body["id"].(float64))
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	const extraCheckouts = 25
+	codes := make([]int, extraCheckouts)
+
+	for i := range voidIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			path := fmt.Sprintf("/transactions/%d/void", voidIDs[i])
+			if code, body := f.do("POST", path, "", nil); code != http.StatusOK || body["status"] != "VOID" {
+				t.Errorf("void %d: status %d body %v", voidIDs[i], code, body)
+			}
+		}()
+	}
+	for i := range extraCheckouts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes[i], _ = f.checkout(uuid4(), lineItem{ProductID: b, Qty: 1}, lineItem{ProductID: a, Qty: 1})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	created := 0
+	for _, c := range codes {
+		if c == http.StatusCreated {
+			created++
+		} else if c != http.StatusConflict {
+			t.Fatalf("unexpected checkout status %d", c)
+		}
+	}
+	wantStock := 30 - created
+	if f.stock(a) != wantStock || f.stock(b) != wantStock {
+		t.Fatalf("stock=(%d,%d), want (%d,%d) after %d created and 10 voided",
+			f.stock(a), f.stock(b), wantStock, wantStock, created)
 	}
 }
 
