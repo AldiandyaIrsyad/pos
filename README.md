@@ -40,14 +40,22 @@ go run ./pos-api/cmd/api                  # from the repo root, reads .env
 cd pos-web && npm install && npm run dev  # http://localhost:5173, proxies /api to :8080
 ```
 
+## 2. Architecture
+
 | Folder | |
 |---|---|
 | `pos-api/` | `internal/sales` (checkout, void), `internal/catalog`, `internal/reports`, `internal/web` (JSON, errors, request ID) |
-| `pos-web/` | `src/cashier`, `src/reports` |
+| `pos-web/` | `src/cashier`, `src/reports`, `src/ui`, `src/api.ts` |
 | `migrations/` | `001` seed, `002` stock/status constraints and idempotency keys, `003` search indexes, `004` report indexes |
 | `benchmark/` | Tools that produce the numbers in this README and in QUERY_NOTES |
 
-## 2. API
+- **Vertical slices by domain:** `pos-api` groups code by business capability (`sales`, `catalog`, `reports`) instead of horizontal technical layers (`handler/`, `service/`, `repository/`). `internal/sales` is the only package that mutates `stocks`, `transactions`, `transaction_items`, and `idempotency_keys`; `catalog` and `reports` are read-only, and `internal/web` holds shared HTTP plumbing.
+- **Explicit constructor DI:** `cmd/api/main.go` is the single composition root. It configures `*pgxpool.Pool` and injects it into each package via `New(pool).Routes(mux)`, with no global database state and no DI container for one shared dependency. Tests wire a test pool through the same `New` constructor.
+- **No repository interfaces or ORM:** Checkout and void correctness depend on Postgres row locks (`SELECT ... FOR UPDATE` in `product_id` order), single-CTE atomic writes, `ON CONFLICT` idempotency claims, and `CHECK` constraints. Abstracting `pgx.Tx` behind per-table repository interfaces would obscure transaction and lock boundaries while adding mocks that cannot verify concurrency guarantees; instead, tests exercise real Postgres.
+- **Scaling the boundary:** If a non-HTTP caller (worker, gRPC) or an external integration (payment gateway, webhook) is introduced, transport-free methods can be extracted inside `internal/sales` with narrow consumer-defined interfaces strictly at those external boundaries.
+- **Frontend separation:** `pos-web` mirrors the feature split (`src/cashier`, `src/reports`) with a single typed fetch layer (`src/api.ts`). Pure state and validation logic (`cartReducer.ts`, `reportFilter.ts`, idempotency attempt lifecycle) is separated from React components and unit-tested directly without DOM or network mocks.
+
+## 3. API
 
 Every error is `{"error": "..."}`. A 409 also has `short_items`. Logs are JSON with a request ID, also returned
 in `X-Request-ID`.
@@ -106,7 +114,7 @@ Tested by `TestTopProducts`, `TestReportValidation`.
 
 All outlets, for the outlet selector.
 
-## 3. Tests
+## 4. Tests
 
 Backend tests run against the real database, because the guarantees come from Postgres locks and constraints. Each
 test creates its own outlet, products and sales and deletes them afterwards.
@@ -147,7 +155,7 @@ Each writes one report into `benchmark/`. Tools marked * copy `pos`, so stop the
 | `go run ./benchmark/hotproduct` | 1000 checkouts from 50 clients on one product | 192 req/s, p95 627 ms, 800×201 / 200×409, stock never negative |
 | `go run ./benchmark/search` | Search latency while typing + category/cursor queries | p95 4.0 ms (1 client), 29.4 ms (10 clients) |
 
-## 4. Assumptions
+## 5. Assumptions
 
 - Report dates are `Asia/Jakarta` (WIB) calendar days, capped at 366 days per request.
 - A repeated void is a success (200), not an error.
@@ -155,7 +163,7 @@ Each writes one report into `benchmark/`. Tools marked * copy `pos`, so stop the
 - There is no login; the cashier name is free text.
 - The client generates the idempotency key (`crypto.randomUUID()`, with a `crypto.getRandomValues` UUIDv4 fallback for non-HTTPS origins).
 
-## 5. What I would improve
+## 6. What I would improve
 
 - Delete idempotency keys older than 72 hours, hourly (with an index on `idempotency_keys(created_at)`). Use `pg_cron` on managed Postgres, otherwise a ticker in `pos-api`.
 - A daily summary table for reports if sales per day grow about 10x (see [QUERY_NOTES.md](QUERY_NOTES.md)).
